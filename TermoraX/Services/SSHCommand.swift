@@ -43,13 +43,18 @@ enum SSHCommand {
         var args = [
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "UpdateHostKeys=yes",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
             "-o", "ControlMaster=auto",
             "-o", option("ControlPath", AppPaths.controlPathTemplate),
             "-o", "ControlPersist=120",
             "-p", "\(target.port)",
         ]
+        let keepAlive = AppSettings.shared.activitySaveInterval
+        if keepAlive > 0 {
+            args += [
+                "-o", "ServerAliveInterval=\(keepAlive)",
+                "-o", "ServerAliveCountMax=3",
+            ]
+        }
         if target.authMethod == "key" {
             let key = AppPaths.expandHome(target.privateKeyPath)
             if !key.isEmpty {

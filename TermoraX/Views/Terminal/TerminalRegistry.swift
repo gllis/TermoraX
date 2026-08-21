@@ -26,6 +26,20 @@ final class TerminalRegistry {
         view.sendText(text)
     }
 
+    func applyFontSize(_ size: CGFloat) {
+        let font = TerminalFont.make(size: size)
+        for view in views.values where abs(view.font.pointSize - font.pointSize) > 0.1 {
+            view.font = font
+        }
+    }
+
+    func applyZModemFolder() {
+        let folder = AppSettings.shared.zmodemReceiveFolder
+        for view in views.values {
+            view.zmodem.receiveDirectory = folder
+        }
+    }
+
     func close(_ tabID: UUID) {
         if let view = views.removeValue(forKey: tabID) {
             view.terminate()
@@ -104,7 +118,7 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
     private func configure() {
         terminalDelegate = self
         process = LocalProcess(delegate: self)
-        font = TerminalFont.make()
+        font = TerminalFont.make(size: AppSettings.shared.terminalFontSize)
         nativeForegroundColor = NSColor(calibratedWhite: 0.88, alpha: 1)
         nativeBackgroundColor = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1)
         caretColor = NSColor(calibratedWhite: 0.92, alpha: 1)
@@ -179,6 +193,11 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
         if window?.firstResponder !== self {
             window?.makeFirstResponder(self)
         }
+        let mouseTakesOver = allowMouseReporting && terminal.mouseMode != .off
+        if AppSettings.shared.quickCopyPaste, !event.modifierFlags.contains(.shift), !mouseTakesOver {
+            paste(nil)
+            return
+        }
         let menu = NSMenu()
         let copyItem = menu.addItem(withTitle: "复制", action: #selector(copy(_:)), keyEquivalent: "c")
         copyItem.target = self
@@ -188,6 +207,14 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
         let selectItem = menu.addItem(withTitle: "全选", action: #selector(selectAll(_:)), keyEquivalent: "a")
         selectItem.target = self
         NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        guard AppSettings.shared.quickCopyPaste, selectionActive else { return }
+        let text = getSelection() ?? ""
+        guard !text.isEmpty else { return }
+        copy(nil)
     }
 
     @objc override func copy(_ sender: Any?) {

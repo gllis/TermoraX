@@ -8,6 +8,8 @@ import SwiftUI
 
 @main
 struct TermoraXApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             SessionNode.self,
@@ -15,7 +17,6 @@ struct TermoraXApp: App {
         ])
         let modelConfiguration = ModelConfiguration(
             "TermoraX",
-            schema: schema,
             isStoredInMemoryOnly: false
         )
         do {
@@ -43,6 +44,12 @@ struct TermoraXApp: App {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             }
         }
+
+        Settings {
+            SettingsView()
+                .navigationTitle("设置")
+        }
+        .windowResizability(.contentSize)
     }
 }
 

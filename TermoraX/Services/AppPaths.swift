@@ -23,29 +23,17 @@ enum AppPaths {
         return url
     }
 
-    /// Default folder for `sz` (remote → Mac). Created on demand.
-    static var downloads: URL {
-        let url = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("TermoraX", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
+    /// User's Downloads folder (the default `sz` destination).
+    static var userDownloads: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
     }
 
-    private static let zmodemFolderKey = "zmodemReceiveFolder"
+    /// Legacy fallback used before settings existed.
+    static var downloads: URL { userDownloads }
 
     static var zmodemReceiveFolder: URL {
-        get {
-            if let path = UserDefaults.standard.string(forKey: zmodemFolderKey) {
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
-                    return URL(fileURLWithPath: path, isDirectory: true)
-                }
-            }
-            return downloads
-        }
-        set {
-            UserDefaults.standard.set(newValue.path, forKey: zmodemFolderKey)
-        }
+        get { AppSettings.shared.zmodemReceiveFolder }
+        set { AppSettings.shared.zmodemReceiveFolder = newValue }
     }
 
     static func uniqueFileURL(in directory: URL, name: String) -> URL {

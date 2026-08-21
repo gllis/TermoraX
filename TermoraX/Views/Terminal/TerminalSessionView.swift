@@ -11,6 +11,7 @@ struct TerminalSessionView: NSViewRepresentable {
     let session: SessionNode?
     let transfers: TransferCenter
     var onTitle: (String) -> Void
+    var fontSize: CGFloat
 
     func makeNSView(context: Context) -> TerminalHostView {
         if let existing = TerminalRegistry.shared.view(for: tab.id) {
@@ -49,6 +50,11 @@ struct TerminalSessionView: NSViewRepresentable {
                 }
             }
         }
+        let font = TerminalFont.make(size: fontSize)
+        if abs(nsView.terminal.font.pointSize - font.pointSize) > 0.1 {
+            nsView.terminal.font = font
+        }
+        nsView.terminal.zmodem.receiveDirectory = AppSettings.shared.zmodemReceiveFolder
     }
 
     private func launch(_ terminal: TermoraTerminalView) {

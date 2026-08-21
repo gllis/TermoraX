@@ -23,6 +23,9 @@ final class WorkspaceController {
 
     let transfers = TransferCenter()
 
+    @ObservationIgnored private var didRestoreActivity = false
+    @ObservationIgnored private var saveTimer: Timer?
+
     var selectedTab: WorkspaceTab? {
         tabs.first(where: { $0.id == selectedTabID }) ?? tabs.last
     }
@@ -73,6 +76,7 @@ final class WorkspaceController {
                 selectedTabID = tabs.last?.id
             }
         }
+        persistActivity()
     }
 
     func closeOthers(_ id: UUID) {
@@ -82,6 +86,7 @@ final class WorkspaceController {
         }
         tabs.removeAll { $0.id != id }
         selectedTabID = id
+        persistActivity()
     }
 
     func closeAll() {
@@ -90,6 +95,7 @@ final class WorkspaceController {
         }
         tabs.removeAll()
         selectedTabID = nil
+        persistActivity()
     }
 
     func sendCommand(_ command: String, allNodes: [SessionNode]) {
@@ -115,6 +121,65 @@ final class WorkspaceController {
     private func append(_ tab: WorkspaceTab) {
         tabs.append(tab)
         selectedTabID = tab.id
+        persistActivity()
+    }
+
+    func restoreActivity(nodes: [SessionNode]) {
+        guard !didRestoreActivity else { return }
+        didRestoreActivity = true
+        guard let snapshot = AppSettings.shared.loadSnapshot(), !snapshot.tabs.isEmpty else {
+            rescheduleActivitySave()
+            return
+        }
+        var restored: [WorkspaceTab] = []
+        for item in snapshot.tabs {
+            switch item.kind {
+            case .local:
+                restored.append(WorkspaceTab(id: item.id, kind: .local, title: item.title))
+            case .terminal:
+                guard let sessionID = item.sessionID, node(in: nodes, id: sessionID)?.isSSH == true else { continue }
+                restored.append(WorkspaceTab(id: item.id, kind: .terminal(sessionID: sessionID), title: item.title))
+            case .sftp:
+                guard let sessionID = item.sessionID, node(in: nodes, id: sessionID)?.isSSH == true else { continue }
+                restored.append(WorkspaceTab(id: item.id, kind: .sftp(sessionID: sessionID), title: item.title))
+            }
+        }
+        tabs = restored
+        if let selected = snapshot.selectedTabID, restored.contains(where: { $0.id == selected }) {
+            selectedTabID = selected
+        } else {
+            selectedTabID = restored.last?.id
+        }
+        rescheduleActivitySave()
+    }
+
+    func persistActivity() {
+        let snapshot = WorkspaceSnapshot(
+            tabs: tabs.map { tab in
+                switch tab.kind {
+                case .local:
+                    return PersistedTab(id: tab.id, kind: .local, sessionID: nil, title: tab.title)
+                case .terminal(let sessionID):
+                    return PersistedTab(id: tab.id, kind: .terminal, sessionID: sessionID, title: tab.title)
+                case .sftp(let sessionID):
+                    return PersistedTab(id: tab.id, kind: .sftp, sessionID: sessionID, title: tab.title)
+                }
+            },
+            selectedTabID: selectedTabID
+        )
+        AppSettings.shared.saveSnapshot(snapshot)
+    }
+
+    func rescheduleActivitySave() {
+        saveTimer?.invalidate()
+        saveTimer = nil
+        let interval = AppSettings.shared.activitySaveInterval
+        guard interval > 0 else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: TimeInterval(interval), repeats: true) { [weak self] _ in
+            self?.persistActivity()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        saveTimer = timer
     }
 }
 

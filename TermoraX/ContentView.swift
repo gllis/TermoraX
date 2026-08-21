@@ -5,12 +5,15 @@
 
 import SwiftData
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openSettings) private var openSettings
     @Query(sort: \SessionNode.sortIndex) private var nodes: [SessionNode]
     @Query(sort: \QuickCommand.sortIndex) private var commands: [QuickCommand]
     @State private var workspace = WorkspaceController()
+    @Bindable private var settings = AppSettings.shared
 
     @AppStorage("sessionPanelPinned") private var sessionPinned = true
     @AppStorage("filePanelPinned") private var filePinned = false
@@ -42,11 +45,26 @@ struct ContentView: View {
         .sheet(item: $workspace.pendingCommandEdit) { command in
             QuickCommandEditorView(command: command)
         }
+        .background(WindowIdentifierSetter())
         .onAppear {
             sessionWidth = storedSessionWidth
             fileWidth = storedFileWidth
             commandHeight = storedCommandHeight
             SeedData.populateIfNeeded(in: modelContext)
+            AppDelegate.workspace = workspace
+            workspace.restoreActivity(nodes: nodes)
+        }
+        .onChange(of: settings.terminalFontSize) { _, size in
+            TerminalRegistry.shared.applyFontSize(size)
+        }
+        .onChange(of: settings.zmodemReceivePath) { _, _ in
+            TerminalRegistry.shared.applyZModemFolder()
+        }
+        .onChange(of: settings.activitySaveInterval) { _, _ in
+            workspace.rescheduleActivitySave()
+        }
+        .onChange(of: workspace.selectedTabID) { _, _ in
+            workspace.persistActivity()
         }
         .onReceive(NotificationCenter.default.publisher(for: .termoraNewSession)) { _ in
             workspace.pendingEdit = .newSession(parent: nil)
@@ -112,6 +130,12 @@ struct ContentView: View {
             Button(action: workspace.openLocal) {
                 Label("本地终端", systemImage: "terminal")
             }
+            Button {
+                openSettings()
+            } label: {
+                Label("设置", systemImage: "gearshape")
+            }
+            .help("打开全局设置")
         }
     }
 
@@ -210,22 +234,16 @@ struct ContentView: View {
                 tab: tab,
                 session: workspace.node(in: nodes, id: sessionID),
                 transfers: workspace.transfers,
-                onTitle: { title in
-                    if let index = workspace.tabs.firstIndex(where: { $0.id == tab.id }) {
-                        workspace.tabs[index].title = title.isEmpty ? workspace.tabs[index].title : title
-                    }
-                }
+                onTitle: { _ in },
+                fontSize: settings.terminalFontSize
             )
         case .local:
             TerminalSessionView(
                 tab: tab,
                 session: nil,
                 transfers: workspace.transfers,
-                onTitle: { title in
-                    if let index = workspace.tabs.firstIndex(where: { $0.id == tab.id }) {
-                        workspace.tabs[index].title = title.isEmpty ? workspace.tabs[index].title : title
-                    }
-                }
+                onTitle: { _ in },
+                fontSize: settings.terminalFontSize
             )
         }
     }
@@ -278,6 +296,20 @@ struct ContentView: View {
     private var currentSSHSession: SessionNode? {
         guard let tab = workspace.selectedTab, let id = tab.sessionID else { return nil }
         return workspace.node(in: nodes, id: id)
+    }
+}
+
+private struct WindowIdentifierSetter: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            view.window?.identifier = NSUserInterfaceItemIdentifier("TermoraX.main")
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.window?.identifier = NSUserInterfaceItemIdentifier("TermoraX.main")
     }
 }
 
