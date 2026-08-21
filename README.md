@@ -2,7 +2,7 @@
 
 macOS 上的 SSH / 本地终端客户端：会话树、多标签终端、SFTP、ZMODEM（`sz` / `rz`）和快速命令。
 
-界面为中文。终端仿真使用 vendored 的 [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)，远程连接走系统 `/usr/bin/ssh`，不内嵌 libssh。
+界面为中文。终端仿真使用 vendored 的 [SwiftTerm v1.19.0](https://github.com/migueldeicaza/SwiftTerm/releases/tag/v1.19.0)，远程连接走系统 `/usr/bin/ssh`，不内嵌 libssh。
 
 ## 功能
 
@@ -33,7 +33,7 @@ macOS 上的 SSH / 本地终端客户端：会话树、多标签终端、SFTP、
 xcodebuild -scheme TermoraX -destination 'platform=macOS,arch=arm64' build
 ```
 
-SwiftTerm 在 `Vendor/SwiftTerm`，以本地 Swift Package 链进工程，改终端行为请改这份源码，不要再拉一份 SPM 依赖。
+SwiftTerm 在 `Vendor/SwiftTerm`（**v1.19.0**），以本地 Swift Package 链进工程。上游构建插件已去掉并换成静态 `SwiftTermBuildInfo.swift`，否则 Xcode 无法校验本地包。改终端行为请改这份源码。
 
 ## 使用
 
@@ -114,8 +114,8 @@ ContentView
 ## 开发备忘
 
 - 部署目标与 Bundle ID：`MACOSX_DEPLOYMENT_TARGET = 26.5`，`com.gllis.TermoraX`
-- 宽字符占位格必须继承正文字符属性，不要用 `Attribute.empty`（默认反色背景会在汉字后画出白块）
-- SwiftTerm 1.5.1 的 `getSelectedText()` 曾把选区起止算成同一点，vendored 副本里已改成直接调用 `Terminal.getText`
+- 宽字符占位格必须继承正文字符属性，不要用 `Buffer.curAttr`（它停在 `Attribute.empty`，汉字后面会画出白块）
+- SwiftTerm 的 `copy`/`paste` 签名改为 `Any?`，否则 AppKit 以 nil sender 调用时选不中方法
 - 标签栏横滑：外层 `HStack` 里的 `ScrollView` 需要 `.frame(minWidth: 0)`，否则会按内容宽度撑破窗口
 
 ## 许可

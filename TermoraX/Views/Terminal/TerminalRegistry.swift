@@ -178,7 +178,8 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
         tryStart()
     }
 
-    /// SwiftTerm 1.5.1 only updates cols/rows in the `frame` setter, not `setFrameSize`.
+    /// 1.19 already recomputes cols/rows in `setFrameSize`; keep the SwiftUI
+    /// frame sync so `tryStart` sees a real size.
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         if !syncingTerminalSize {
