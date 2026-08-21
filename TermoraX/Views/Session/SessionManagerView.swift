@@ -43,21 +43,30 @@ struct SessionManagerView: View {
             .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
             .padding(10)
 
-            List {
+            ScrollView {
                 if workspace.sessionSearch.isEmpty {
-                    ForEach(roots, id: \.id) { node in
-                        SessionOutlineRow(node: node, workspace: workspace)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(roots, id: \.id) { node in
+                            SessionOutlineRow(node: node, workspace: workspace)
+                        }
                     }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 } else if filtered.isEmpty {
                     ContentUnavailableView("没有匹配的会话", systemImage: "magnifyingglass")
-                        .listRowSeparator(.hidden)
+                        .frame(maxWidth: .infinity, minHeight: 160)
                 } else {
-                    ForEach(filtered, id: \.id) { node in
-                        SessionLeafRow(node: node, workspace: workspace)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(filtered, id: \.id) { node in
+                            SessionLeafRow(node: node, workspace: workspace)
+                        }
                     }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .listStyle(.sidebar)
             .contextMenu {
                 Button("新建分组") { workspace.pendingEdit = .newGroup(parent: nil) }
                 Button("新建会话") { workspace.pendingEdit = .newSession(parent: nil) }
@@ -83,20 +92,18 @@ struct SessionManagerView: View {
 }
 
 private struct SessionOutlineRow: View {
-    let node: SessionNode
+    @Bindable var node: SessionNode
     var workspace: WorkspaceController
+    var depth: Int = 0
 
     var body: some View {
-        if node.isGroup {
-            DisclosureGroup {
+        VStack(alignment: .leading, spacing: 8) {
+            SessionLeafRow(node: node, workspace: workspace, depth: depth)
+            if node.isGroup, node.isExpanded {
                 ForEach(node.sortedChildren, id: \.id) { child in
-                    SessionOutlineRow(node: child, workspace: workspace)
+                    SessionOutlineRow(node: child, workspace: workspace, depth: depth + 1)
                 }
-            } label: {
-                SessionLeafRow(node: node, workspace: workspace)
             }
-        } else {
-            SessionLeafRow(node: node, workspace: workspace)
         }
     }
 }
@@ -104,22 +111,35 @@ private struct SessionOutlineRow: View {
 private struct SessionLeafRow: View {
     let node: SessionNode
     var workspace: WorkspaceController
+    var depth: Int = 0
 
     var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(node.name)
-                    .lineLimit(1)
-                Text(node.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        HStack(spacing: 6) {
+            Color.clear.frame(width: CGFloat(depth) * 14)
+            if node.isGroup {
+                Button {
+                    node.isExpanded.toggle()
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .rotationEffect(.degrees(node.isExpanded ? 90 : 0))
+                        .frame(width: 12, height: 12)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Color.clear.frame(width: 12, height: 12)
             }
-        } icon: {
             Image(systemName: node.isGroup ? "folder.fill" : (node.isLocal ? "laptopcomputer" : "server.rack"))
+                .font(.system(size: 12))
                 .foregroundStyle(node.isGroup ? Color.accentColor : .secondary)
+                .frame(width: 14)
+            Text(node.name)
+                .lineLimit(1)
+            Spacer(minLength: 0)
         }
+        .padding(.vertical, 0)
         .contentShape(Rectangle())
+        .help(node.subtitle)
         .onTapGesture(count: 2) {
             workspace.openSSH(node)
         }
@@ -137,7 +157,7 @@ private struct SessionLeafRow: View {
             Divider()
             Button("删除", role: .destructive) {
                 if !node.isGroup {
-                    KeychainStore.deletePassword(for: node.id)
+                    SecretStore.deletePassword(for: node.id)
                 }
                 node.modelContext?.delete(node)
             }

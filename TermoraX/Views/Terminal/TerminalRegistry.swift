@@ -180,10 +180,47 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
             window?.makeFirstResponder(self)
         }
         let menu = NSMenu()
-        menu.addItem(withTitle: "复制", action: #selector(copy(_:)), keyEquivalent: "c")
-        menu.addItem(withTitle: "粘贴", action: #selector(paste(_:)), keyEquivalent: "v")
-        menu.addItem(withTitle: "全选", action: #selector(selectAll(_:)), keyEquivalent: "a")
+        let copyItem = menu.addItem(withTitle: "复制", action: #selector(copy(_:)), keyEquivalent: "c")
+        copyItem.target = self
+        copyItem.isEnabled = selectionActive
+        let pasteItem = menu.addItem(withTitle: "粘贴", action: #selector(paste(_:)), keyEquivalent: "v")
+        pasteItem.target = self
+        let selectItem = menu.addItem(withTitle: "全选", action: #selector(selectAll(_:)), keyEquivalent: "a")
+        selectItem.target = self
         NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc override func copy(_ sender: Any?) {
+        let str = getSelection() ?? ""
+        let board = NSPasteboard.general
+        board.clearContents()
+        board.setString(str, forType: .string)
+    }
+
+    override func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
+        guard selectionActive, let text = getSelection() else { return nil }
+        actualRange?.pointee = selectedRange()
+        return NSAttributedString(string: text)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let command = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command)
+        guard command, !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.option) else {
+            return super.performKeyEquivalent(with: event)
+        }
+        switch event.charactersIgnoringModifiers {
+        case "c", "C":
+            copy(nil)
+            return true
+        case "v", "V":
+            paste(nil)
+            return true
+        case "a", "A":
+            selectAll(nil)
+            return true
+        default:
+            return super.performKeyEquivalent(with: event)
+        }
     }
 
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
@@ -357,5 +394,9 @@ final class TerminalHostView: NSView {
 
     override func becomeFirstResponder() -> Bool {
         window?.makeFirstResponder(terminal) ?? false
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        terminal.performKeyEquivalent(with: event)
     }
 }

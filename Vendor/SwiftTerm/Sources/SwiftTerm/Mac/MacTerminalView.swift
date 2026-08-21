@@ -779,8 +779,10 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     
     // NSTextInputClient protocol implementation
     open func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
-        print ("Attribuetd string")
-        return nil
+        guard selection.active else { return nil }
+        let text = selection.getSelectedText()
+        actualRange?.pointee = selectedRange()
+        return NSAttributedString(string: text)
     }
     
     // NSTextInputClient Protocol implementation
@@ -842,7 +844,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     func cut (sender: Any?) {}
     
     @objc
-    open func paste(_ sender: Any)
+    open func paste(_ sender: Any?)
     {
         let clipboard = NSPasteboard.general
         let text = clipboard.string(forType: .string)
@@ -850,11 +852,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     @objc
-    open func copy(_ sender: Any)
+    open func copy(_ sender: Any?)
     {
-        // find the selected range of text in the buffer and put in the clipboard
         let str = selection.getSelectedText()
-        
         let clipboard = NSPasteboard.general
         clipboard.clearContents()
         clipboard.setString(str, forType: .string)
@@ -895,7 +895,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             return Position (col: Int (x), row: Int (bounds.height-y))
         }
         let col = Int (point.x / cellDimension.width)
-        let row = Int ((frame.height-point.y) / cellDimension.height) + terminal.buffer.yDisp
+        // Screen-relative row. `startSelection` / `dragExtend` add `yDisp`.
+        let row = Int ((bounds.height - point.y) / cellDimension.height)
         if row < 0 {
             return (Position(col: 0, row: 0), toInt (point))
         }

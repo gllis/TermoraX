@@ -228,7 +228,7 @@ final class SFTPClient: @unchecked Sendable {
     }
 
     private func start(_ target: SSHTarget) throws {
-        let password = target.authMethod == "key" ? nil : KeychainStore.password(for: target.id)
+        let password = target.authMethod == "key" ? nil : SecretStore.password(for: target.id)
         let ask = SSHCommand.askpassEnvironment(password: password)
         secret = ask.secret
 

@@ -255,7 +255,16 @@ public final class BufferLine: CustomDebugStringConvertible {
         }
         var result = ""
         for i in startCol..<max(ec,startCol) {
-            result.append (data [i].getCharacter ())
+            let cell = data [i]
+            if cell.code == 0 {
+                // Second cell of a wide (CJK) character: skip, do not emit a space.
+                if i > 0 && data [i - 1].width == 2 {
+                    continue
+                }
+                result.append (" ")
+                continue
+            }
+            result.append (cell.getCharacter ())
         }
         return result
     }

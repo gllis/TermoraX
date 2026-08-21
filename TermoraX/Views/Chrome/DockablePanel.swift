@@ -23,15 +23,9 @@ struct DockablePanel<Content: View>: View {
                     .foregroundStyle(.secondary)
                 Text(title)
                     .font(.headline)
-                Spacer()
-                Button {
-                    pinned.toggle()
-                    expanded = pinned
-                } label: {
-                    Image(systemName: pinned ? "pin.fill" : "pin")
-                }
-                .buttonStyle(.borderless)
-                .help(pinned ? "取消固定" : "固定面板")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Spacer(minLength: 8)
                 Button {
                     pinned = false
                     expanded = false
@@ -39,15 +33,19 @@ struct DockablePanel<Content: View>: View {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
+                .layoutPriority(1)
                 .help("隐藏面板")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             Divider()
             content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: width, height: height, alignment: .topLeading)
-        .background(.ultraThinMaterial)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(width: width, height: height)
+        .clipped()
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -87,7 +85,7 @@ struct AutoHideStrip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("\(title)（自动隐藏，点击展开，可在工具栏中固定）")
+        .help("\(title)（点击展开）")
     }
 }
 
@@ -97,31 +95,49 @@ struct PanelResizeHandle: View {
     let current: CGFloat
     let range: ClosedRange<CGFloat>
     var onChange: (CGFloat) -> Void
-    @State private var origin: CGFloat?
+    var onEnd: (() -> Void)? = nil
+
+    @State private var startValue: CGFloat?
+    @State private var startPosition: CGFloat?
 
     var body: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.06))
-            .frame(width: vertical ? 5 : nil, height: vertical ? nil : 5)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                if hovering {
-                    (vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
-                } else {
-                    NSCursor.arrow.set()
-                }
+        ZStack {
+            Color.clear
+            Rectangle()
+                .fill(Color.primary.opacity(0.12))
+                .frame(width: vertical ? 1 : nil, height: vertical ? nil : 1)
+        }
+        .frame(width: vertical ? 8 : nil, height: vertical ? nil : 8)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering {
+                (vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+            } else {
+                NSCursor.arrow.set()
             }
-            .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        if origin == nil { origin = current }
-                        let delta = vertical ? value.translation.width : value.translation.height
-                        let next = (origin ?? current) + (inverted ? -delta : delta)
+        }
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    if startValue == nil {
+                        startValue = current
+                        startPosition = vertical ? value.startLocation.x : value.startLocation.y
+                    }
+                    guard let startValue, let startPosition else { return }
+                    let position = vertical ? value.location.x : value.location.y
+                    let delta = position - startPosition
+                    let next = startValue + (inverted ? -delta : delta)
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
                         onChange(min(max(next, range.lowerBound), range.upperBound))
                     }
-                    .onEnded { _ in
-                        origin = nil
-                    }
-            )
+                }
+                .onEnded { _ in
+                    startValue = nil
+                    startPosition = nil
+                    onEnd?()
+                }
+        )
     }
 }

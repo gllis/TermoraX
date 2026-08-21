@@ -527,18 +527,11 @@ class SelectionService: CustomDebugStringConvertible {
     }
     
     public func getSelectedText () -> String {
-        let min = if Position.compare(start, end) == .before {
-            start
-        } else {
-            end
-        }
-        let max = if Position.compare(start, end) == .after {
-            end
-        } else {
-            start
-        }
-        let r = terminal.getText(start: min, end: max)
-        return r
+        // `Terminal.getText` already orders the two positions. The 1.5.1
+        // min/max helper compared `.after` for the upper bound, so min always
+        // equalled max and copy produced an empty string (often pasted as a
+        // lone newline).
+        terminal.getText(start: start, end: end)
     }
     
     public var debugDescription: String {

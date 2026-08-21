@@ -48,6 +48,7 @@ struct FileManagerView: View {
                     .padding(8)
             }
         }
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             model.transfers = transfers
             model.loadLocal()
@@ -70,11 +71,14 @@ struct FileManagerView: View {
         isRemote: Bool
     ) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Text(title)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .layoutPriority(1)
                 TextField("路径", text: path)
                     .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 0)
                     .onSubmit {
                         if isRemote { model.refreshRemote() } else { model.loadLocal() }
                     }
@@ -141,7 +145,7 @@ struct FileManagerView: View {
                 }
             }
         }
-        .frame(minWidth: 220)
+        .frame(minWidth: 0, maxWidth: .infinity)
         .overlay {
             if isRemote && model.isConnecting {
                 ProgressView("正在连接 SFTP…")

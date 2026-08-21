@@ -16,7 +16,7 @@ struct WelcomeView: View {
                 .foregroundStyle(Color.accentColor)
             Text("TermoraX")
                 .font(.largeTitle.weight(.semibold))
-            Text("会话管理器、快速命令管理器、选项卡管理器和文件管理器，管理远程主机比以往更容易。将管理器固定到您想要的位置或让它们自动隐藏可以获得更整洁的外观。")
+            Text("会话管理器、快速命令、选项卡和文件管理器，用来管理远程主机。用工具栏按钮显示或隐藏各个面板。")
                 .font(.title3)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

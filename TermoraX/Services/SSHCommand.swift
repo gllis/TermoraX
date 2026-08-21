@@ -19,7 +19,7 @@ enum SSHCommand {
     private static func effectiveAuthMethod(for node: SessionNode) -> String {
         if node.authMethod == "key" { return "key" }
         if node.authMethod == "password" { return "password" }
-        if KeychainStore.password(for: node.id) != nil { return "password" }
+        if SecretStore.password(for: node.id) != nil { return "password" }
         return node.authMethod
     }
 
@@ -128,7 +128,7 @@ enum SSHCommand {
     }
 
     static func terminalLaunch(for session: SessionNode) -> (args: [String], env: [String], secret: URL?) {
-        let stored = session.authMethod == "key" ? nil : KeychainStore.password(for: session.id)
+        let stored = session.authMethod == "key" ? nil : SecretStore.password(for: session.id)
         let ask = askpassEnvironment(password: stored)
         return (terminalArguments(for: session), processEnvironment(extra: ask.env), ask.secret)
     }

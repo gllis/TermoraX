@@ -32,6 +32,8 @@ struct TabBarView: View {
             .help("新建本地终端")
         }
         .frame(height: 36)
+        .frame(maxWidth: .infinity)
+        .clipped()
         .background(.bar)
     }
 

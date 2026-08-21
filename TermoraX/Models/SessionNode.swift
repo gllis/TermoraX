@@ -24,6 +24,7 @@ final class SessionNode {
     var privateKeyPath: String
     var sftpDefaultPath: String
     var note: String
+    var isExpanded: Bool = true
 
     var parent: SessionNode?
     @Relationship(deleteRule: .cascade, inverse: \SessionNode.parent)
@@ -48,6 +49,7 @@ final class SessionNode {
         self.privateKeyPath = ""
         self.sftpDefaultPath = ""
         self.note = ""
+        self.isExpanded = true
         self.parent = parent
         self.children = []
     }
@@ -64,7 +66,7 @@ final class SessionNode {
     var isLocal: Bool { !isGroup && sessionProtocol == "local" }
 
     var subtitle: String {
-        if isGroup { return "\(children.count) 项" }
+        if isGroup { return "" }
         if isLocal { return "本地终端" }
         let user = username.isEmpty ? NSUserName() : username
         return host.isEmpty ? "未配置主机" : "\(user)@\(host):\(port)"

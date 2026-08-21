@@ -15,50 +15,23 @@ struct ContentView: View {
     @AppStorage("sessionPanelPinned") private var sessionPinned = true
     @AppStorage("filePanelPinned") private var filePinned = false
     @AppStorage("commandPanelPinned") private var commandPinned = true
-    @AppStorage("sessionPanelWidth") private var sessionWidth = 260.0
-    @AppStorage("filePanelWidth") private var fileWidth = 520.0
-    @AppStorage("commandPanelHeight") private var commandHeight = 108.0
+    @AppStorage("sessionPanelWidth") private var storedSessionWidth = 260.0
+    @AppStorage("filePanelWidth") private var storedFileWidth = 520.0
+    @AppStorage("commandPanelHeight") private var storedCommandHeight = 156.0
+    @State private var sessionWidth: CGFloat = 260
+    @State private var fileWidth: CGFloat = 520
+    @State private var commandHeight: CGFloat = 156
     @State private var sftpHint = false
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            HStack(spacing: 0) {
-                sessionColumn
-                mainColumn
-                fileColumn
-            }
-            if !sessionPinned && workspace.sessionPanelExpanded {
-                sessionPanel
-                    .frame(width: sessionWidth)
-                    .background(.ultraThinMaterial)
-                    .overlay(alignment: .trailing) { Divider() }
-                    .shadow(radius: 18)
-                    .padding(.leading, AppTheme.autoHideStrip)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-                    .onHover { hovering in
-                        if hovering { workspace.sessionPanelExpanded = true }
-                        else { collapseSessionSoon() }
-                    }
-            }
-            if !filePinned && workspace.filePanelExpanded {
-                HStack {
-                    Spacer()
-                    filePanel
-                        .frame(width: fileWidth)
-                        .background(.ultraThinMaterial)
-                        .overlay(alignment: .leading) { Divider() }
-                        .shadow(radius: 18)
-                        .padding(.trailing, AppTheme.autoHideStrip)
-                }
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-                .onHover { hovering in
-                    if hovering { workspace.filePanelExpanded = true }
-                    else { collapseFileSoon() }
-                }
-            }
+        HStack(spacing: 0) {
+            sessionColumn
+            mainColumn
+            fileColumn
         }
-        .animation(.easeInOut(duration: 0.18), value: workspace.sessionPanelExpanded)
-        .animation(.easeInOut(duration: 0.18), value: workspace.filePanelExpanded)
+        .animation(.easeInOut(duration: 0.18), value: sessionPinned)
+        .animation(.easeInOut(duration: 0.18), value: filePinned)
+        .animation(.easeInOut(duration: 0.18), value: workspace.commandPanelExpanded)
         .toolbar { toolbar }
         .sheet(item: $workspace.pendingEdit) { token in
             SessionEditorView(token: token)
@@ -70,6 +43,9 @@ struct ContentView: View {
             QuickCommandEditorView(command: command)
         }
         .onAppear {
+            sessionWidth = storedSessionWidth
+            fileWidth = storedFileWidth
+            commandHeight = storedCommandHeight
             SeedData.populateIfNeeded(in: modelContext)
         }
         .onReceive(NotificationCenter.default.publisher(for: .termoraNewSession)) { _ in
@@ -94,15 +70,15 @@ struct ContentView: View {
             } label: {
                 Label("会话管理器", systemImage: sessionPinned ? "sidebar.left" : "sidebar.squares.left")
             }
-            .help(sessionPinned ? "会话管理器已固定，点击改为自动隐藏" : "会话管理器自动隐藏中，点击固定")
+            .help(sessionPinned ? "隐藏会话管理器" : "显示会话管理器")
 
             Button {
                 commandPinned.toggle()
                 workspace.commandPanelExpanded = commandPinned
             } label: {
-                Label("快速命令", systemImage: "bolt.horizontal")
+                Label("快速命令", systemImage: commandPinned ? "square.grid.2x2.fill" : "square.grid.2x2")
             }
-            .help(commandPinned ? "快速命令已固定，点击改为自动隐藏" : "快速命令自动隐藏中，点击固定")
+            .help(commandPinned ? "隐藏快速命令" : "显示快速命令")
 
             Button {
                 filePinned.toggle()
@@ -110,7 +86,7 @@ struct ContentView: View {
             } label: {
                 Label("文件管理器", systemImage: filePinned ? "sidebar.right" : "sidebar.squares.right")
             }
-            .help(filePinned ? "文件管理器已固定，点击改为自动隐藏" : "文件管理器自动隐藏中，点击固定")
+            .help(filePinned ? "隐藏文件管理器" : "显示文件管理器")
         }
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
@@ -144,16 +120,17 @@ struct ContentView: View {
         if sessionPinned {
             sessionPanel
                 .frame(width: sessionWidth)
-            PanelResizeHandle(current: sessionWidth, range: AppTheme.sessionWidthRange) { sessionWidth = $0 }
-        } else {
-            AutoHideStrip(title: "会话管理器", systemImage: "sidebar.left", axis: .vertical) {
-                workspace.sessionPanelExpanded = true
+                .frame(maxHeight: .infinity)
+                .layoutPriority(1)
+                .clipped()
+            PanelResizeHandle(current: sessionWidth, range: AppTheme.sessionWidthRange) {
+                sessionWidth = $0
+            } onEnd: {
+                storedSessionWidth = sessionWidth
             }
-            .onHover { hovering in
-                if hovering { workspace.sessionPanelExpanded = true }
-            }
+            .zIndex(2)
+            Divider()
         }
-        Divider()
     }
 
     private var sessionPanel: some View {
@@ -185,21 +162,28 @@ struct ContentView: View {
                 Divider()
                 PanelResizeHandle(vertical: false, inverted: true, current: commandHeight, range: AppTheme.commandHeightRange) {
                     commandHeight = $0
+                } onEnd: {
+                    storedCommandHeight = commandHeight
                 }
                 commandPanel
-                    .frame(height: commandHeight)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: clampedCommandHeight)
+                    .clipped()
             } else {
-                AutoHideStrip(title: "快速命令", systemImage: "bolt.horizontal", axis: .horizontal) {
+                AutoHideStrip(title: "快速命令", systemImage: "square.grid.2x2", axis: .horizontal) {
                     workspace.commandPanelExpanded.toggle()
                 }
                 if workspace.commandPanelExpanded {
                     commandPanel
-                        .frame(height: commandHeight)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: clampedCommandHeight)
+                        .clipped()
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     @ViewBuilder
@@ -248,18 +232,20 @@ struct ContentView: View {
 
     @ViewBuilder
     private var fileColumn: some View {
-        Divider()
         if filePinned {
-            PanelResizeHandle(inverted: true, current: fileWidth, range: AppTheme.fileWidthRange) { fileWidth = $0 }
+            Divider()
+            PanelResizeHandle(inverted: true, current: fileWidth, range: AppTheme.fileWidthRange) {
+                fileWidth = $0
+            } onEnd: {
+                storedFileWidth = fileWidth
+            }
+            .zIndex(2)
             filePanel
+                .frame(minWidth: 0)
                 .frame(width: fileWidth)
-        } else {
-            AutoHideStrip(title: "文件管理器", systemImage: "folder", axis: .vertical) {
-                workspace.filePanelExpanded = true
-            }
-            .onHover { hovering in
-                if hovering { workspace.filePanelExpanded = true }
-            }
+                .frame(maxHeight: .infinity)
+                .layoutPriority(1)
+                .clipped()
         }
     }
 
@@ -277,30 +263,21 @@ struct ContentView: View {
     private var commandPanel: some View {
         DockablePanel(
             title: "快速命令",
-            systemImage: "bolt.horizontal",
+            systemImage: "square.grid.2x2",
             pinned: $commandPinned,
-            expanded: $workspace.commandPanelExpanded,
-            height: commandHeight
+            expanded: $workspace.commandPanelExpanded
         ) {
             QuickCommandView(commands: commands, workspace: workspace, nodes: nodes)
         }
     }
 
+    private var clampedCommandHeight: CGFloat {
+        min(max(commandHeight, AppTheme.commandHeightRange.lowerBound), AppTheme.commandHeightRange.upperBound)
+    }
+
     private var currentSSHSession: SessionNode? {
         guard let tab = workspace.selectedTab, let id = tab.sessionID else { return nil }
         return workspace.node(in: nodes, id: id)
-    }
-
-    private func collapseSessionSoon() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
-            if !sessionPinned { workspace.sessionPanelExpanded = false }
-        }
-    }
-
-    private func collapseFileSoon() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
-            if !filePinned { workspace.filePanelExpanded = false }
-        }
     }
 }
 

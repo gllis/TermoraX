@@ -34,7 +34,7 @@ struct SessionEditorView: View {
                     }
                     if sessionProtocol == "ssh" {
                         TextField("主机", text: $host)
-                        TextField("端口", value: $port, format: .number)
+                        TextField("端口", value: $port, format: IntegerFormatStyle<Int>().grouping(.never))
                         TextField("用户名", text: $username)
                         Picker("认证", selection: $authMethod) {
                             Text("系统默认（密钥 / ssh-agent）").tag("default")
@@ -43,7 +43,7 @@ struct SessionEditorView: View {
                         }
                         .help("要自动登录，请选择「密码」并保存。已打开的标签页需要关掉后重新连接。")
                         if authMethod == "password" {
-                            SecureField("密码（保存在钥匙串，连接时自动填写）", text: $password)
+                            SecureField("密码", text: $password)
                         }
                         if authMethod == "key" {
                             TextField("私钥路径", text: $privateKeyPath)
@@ -52,11 +52,13 @@ struct SessionEditorView: View {
                         TextField("SFTP 默认目录", text: $sftpDefaultPath)
                     }
                     TextField("备注", text: $note, axis: .vertical)
-                        .lineLimit(3, reservesSpace: true)
+                        .lineLimit(1...3)
                 }
             }
             .formStyle(.grouped)
-            .padding(.top, 8)
+            .scrollDisabled(true)
+            .padding(.top, 4)
+            .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Spacer()
@@ -66,9 +68,11 @@ struct SessionEditorView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            .padding()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
-        .frame(minWidth: 460, minHeight: isGroup ? 180 : 520)
+        .frame(width: 460)
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear(perform: load)
     }
 
@@ -93,7 +97,7 @@ struct SessionEditorView: View {
             privateKeyPath = node.privateKeyPath
             sftpDefaultPath = node.sftpDefaultPath
             note = node.note
-            password = KeychainStore.password(for: node.id) ?? ""
+            password = SecretStore.password(for: node.id) ?? ""
         }
     }
 
@@ -114,16 +118,16 @@ struct SessionEditorView: View {
         if !node.isGroup {
             node.sessionProtocol = sessionProtocol
             node.host = host.trimmingCharacters(in: .whitespaces)
-            node.port = port
+            node.port = min(max(port, 1), 65535)
             node.username = username.trimmingCharacters(in: .whitespaces)
             node.authMethod = authMethod
             node.privateKeyPath = privateKeyPath
             node.sftpDefaultPath = sftpDefaultPath
             node.note = note
             if authMethod == "password" {
-                KeychainStore.setPassword(password, for: node.id)
+                SecretStore.setPassword(password, for: node.id)
             } else {
-                KeychainStore.deletePassword(for: node.id)
+                SecretStore.deletePassword(for: node.id)
             }
         }
         try? modelContext.save()
