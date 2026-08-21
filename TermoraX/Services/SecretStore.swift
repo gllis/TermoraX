@@ -13,6 +13,7 @@ import Foundation
 import IOKit
 import Security
 
+/// 会话密码保险库。文件在 Application Support；密钥绑定本机与当前用户。
 enum SecretStore {
     private static let magic = Data([0x54, 0x58, 0x43, 0x31]) // TXC1
     private static let version: UInt8 = 1

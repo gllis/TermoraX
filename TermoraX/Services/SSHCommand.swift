@@ -2,6 +2,9 @@
 //  SSHCommand.swift
 //  TermoraX
 //
+//  组装 `/usr/bin/ssh` 参数与 ASKPASS 环境。不内嵌 libssh，复用系统 OpenSSH
+//  的密钥、known_hosts 与 ControlMaster 复用。
+//
 
 import Foundation
 
@@ -39,6 +42,7 @@ enum SSHCommand {
         baseOptions(for: target(from: node))
     }
 
+    /// 传给 `ssh` 的公共 `-o`。保活间隔取自「保存活动状态」秒数。
     static func baseOptions(for target: SSHTarget) -> [String] {
         var args = [
             "-o", "StrictHostKeyChecking=accept-new",
@@ -132,6 +136,7 @@ enum SSHCommand {
         ], secret)
     }
 
+    /// 启动交互式 SSH：参数 + 环境变量（含密码登录时的 ASKPASS 临时文件）。
     static func terminalLaunch(for session: SessionNode) -> (args: [String], env: [String], secret: URL?) {
         let stored = session.authMethod == "key" ? nil : SecretStore.password(for: session.id)
         let ask = askpassEnvironment(password: stored)
@@ -139,6 +144,7 @@ enum SSHCommand {
     }
 }
 
+/// 连接目标的值类型副本，避免在后台线程碰到 SwiftData 模型。
 struct SSHTarget: Sendable {
     let id: UUID
     let host: String

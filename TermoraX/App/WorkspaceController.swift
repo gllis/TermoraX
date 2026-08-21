@@ -2,12 +2,15 @@
 //  WorkspaceController.swift
 //  TermoraX
 //
+//  工作区状态：打开的标签、当前选中项、面板展开，以及活动快照的保存 / 恢复。
+//
 
 import Foundation
 import Observation
 import SwiftData
 import SwiftUI
 
+/// 主窗口的运行时状态。不写入 SwiftData；标签列表按设置间隔序列化到 UserDefaults。
 @Observable
 final class WorkspaceController {
     var tabs: [WorkspaceTab] = []
@@ -124,6 +127,7 @@ final class WorkspaceController {
         persistActivity()
     }
 
+    /// 启动时根据上次快照重开标签。对应会话已被删除的项会跳过。
     func restoreActivity(nodes: [SessionNode]) {
         guard !didRestoreActivity else { return }
         didRestoreActivity = true
@@ -153,6 +157,7 @@ final class WorkspaceController {
         rescheduleActivitySave()
     }
 
+    /// 把当前标签写入 UserDefaults，不保存 PTY 内容。
     func persistActivity() {
         let snapshot = WorkspaceSnapshot(
             tabs: tabs.map { tab in
@@ -183,6 +188,7 @@ final class WorkspaceController {
     }
 }
 
+/// 会话编辑 sheet 的来源：新建分组、新建会话或编辑已有节点。
 enum SessionEditorToken: Identifiable {
     case newGroup(parent: SessionNode?)
     case newSession(parent: SessionNode?)

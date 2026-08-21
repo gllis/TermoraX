@@ -2,6 +2,8 @@
 //  AppTheme.swift
 //  TermoraX
 //
+//  面板可拖拽宽度 / 高度范围。
+//
 
 import SwiftUI
 

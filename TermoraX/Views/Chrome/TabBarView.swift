@@ -2,6 +2,8 @@
 //  TabBarView.swift
 //  TermoraX
 //
+//  标签栏。ScrollView 必须 `minWidth: 0`，否则会按内容撑出窗口导致右侧标签被裁切。
+//
 
 import SwiftUI
 

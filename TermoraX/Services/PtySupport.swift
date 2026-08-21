@@ -2,6 +2,8 @@
 //  PtySupport.swift
 //  TermoraX
 //
+//  仅在 ZMODEM 传输期间把 master pty 调成 8-bit clean，结束后恢复。
+//
 
 import Darwin
 import Foundation

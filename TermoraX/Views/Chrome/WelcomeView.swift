@@ -2,6 +2,8 @@
 //  WelcomeView.swift
 //  TermoraX
 //
+//  尚未打开标签时的欢迎页。
+//
 
 import AppKit
 import SwiftUI

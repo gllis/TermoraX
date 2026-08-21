@@ -2,6 +2,9 @@
 //  AppPaths.swift
 //  TermoraX
 //
+//  Application Support、mux socket、下载目录、ASKPASS 脚本路径。
+//  ControlPath 必须放在无空格目录，否则 OpenSSH 会把路径拆成多个参数。
+//
 
 import Foundation
 

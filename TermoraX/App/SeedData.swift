@@ -2,6 +2,8 @@
 //  SeedData.swift
 //  TermoraX
 //
+//  首次启动写入默认分组（生产 / 测试）和几条示例快速命令。
+//
 
 import Foundation
 import SwiftData

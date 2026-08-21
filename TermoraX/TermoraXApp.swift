@@ -2,10 +2,13 @@
 //  TermoraXApp.swift
 //  TermoraX
 //
+//  应用入口：SwiftData 容器、主窗口、设置窗口，以及菜单栏「新建会话 / 分组」。
+//
 
 import SwiftData
 import SwiftUI
 
+/// macOS 应用入口。会话与快速命令持久化在 SwiftData 中，终端进程由各标签页自行托管。
 @main
 struct TermoraXApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate

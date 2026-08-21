@@ -2,9 +2,12 @@
 //  WorkspaceTab.swift
 //  TermoraX
 //
+//  中间区域的一个标签：SSH 终端、SFTP 或本地 shell。`id` 同时作为 TerminalRegistry 的键。
+//
 
 import Foundation
 
+/// 工作区标签。标题使用会话名称，避免被远程 `OSC` 标题（如 `root@host:~`）覆盖。
 struct WorkspaceTab: Identifiable, Hashable {
     enum Kind: Hashable {
         case terminal(sessionID: UUID)

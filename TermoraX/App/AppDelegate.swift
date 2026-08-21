@@ -2,9 +2,12 @@
 //  AppDelegate.swift
 //  TermoraX
 //
+//  处理 Dock 点击恢复、最后一扇窗口是否退出，以及关闭按钮「隐藏到 Dock」。
+//
 
 import AppKit
 
+/// 桥接 AppKit 生命周期。SwiftUI `WindowGroup` 本身拦不到红灯关闭。
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var workspace: WorkspaceController?
 
@@ -44,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// 接到主窗口 `delegate` 上，转发 SwiftUI 原有代理，只改写 `windowShouldClose`。
 final class WindowCloseProxy: NSObject, NSWindowDelegate {
     private weak var window: NSWindow?
     private weak var previous: NSWindowDelegate?

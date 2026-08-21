@@ -2,6 +2,8 @@
 //  TerminalSessionView.swift
 //  TermoraX
 //
+//  SwiftUI 封装。同一 tab.id 复用 TerminalRegistry 里的视图，切换标签不会重连。
+//
 
 import SwiftTerm
 import SwiftUI

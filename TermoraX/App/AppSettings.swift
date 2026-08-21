@@ -2,10 +2,13 @@
 //  AppSettings.swift
 //  TermoraX
 //
+//  全局偏好，全部落在 UserDefaults。设置窗口与运行时行为（字体、关闭、ZMODEM 路径等）共用这一份。
+//
 
 import Foundation
 import Observation
 
+/// 点击窗口关闭按钮时的行为。
 enum CloseBehavior: String, CaseIterable, Identifiable {
     case hideToDock
     case quit
@@ -20,6 +23,7 @@ enum CloseBehavior: String, CaseIterable, Identifiable {
     }
 }
 
+/// 已打开标签的快照，用于「保存活动状态」恢复。
 struct WorkspaceSnapshot: Codable, Equatable {
     var tabs: [PersistedTab]
     var selectedTabID: UUID?
@@ -38,6 +42,7 @@ struct PersistedTab: Codable, Equatable {
     var title: String
 }
 
+/// 进程级单例。属性 `didSet` 立即写入 UserDefaults，无需单独「保存」按钮。
 @Observable
 final class AppSettings {
     static let shared = AppSettings()

@@ -2,6 +2,8 @@
 //  SettingsView.swift
 //  TermoraX
 //
+//  系统「设置」窗口（⌘,）。绑定 AppSettings.shared，改动立即生效。
+//
 
 import AppKit
 import SwiftUI

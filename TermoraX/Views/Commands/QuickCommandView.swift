@@ -2,6 +2,8 @@
 //  QuickCommandView.swift
 //  TermoraX
 //
+//  底部命令条：Shortcuts 风格方块，点击把命令写入当前（或全部）终端。
+//
 
 import SwiftData
 import SwiftUI

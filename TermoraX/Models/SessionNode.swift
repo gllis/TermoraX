@@ -2,10 +2,13 @@
 //  SessionNode.swift
 //  TermoraX
 //
+//  会话树节点：分组或主机。密码不存在这里，只存 `id`，密文在 SecretStore。
+//
 
 import Foundation
 import SwiftData
 
+/// SwiftData 模型。分组可嵌套；叶子节点是 SSH 或本地终端。
 @Model
 final class SessionNode {
     var id: UUID
@@ -65,6 +68,7 @@ final class SessionNode {
     var isSSH: Bool { !isGroup && sessionProtocol == "ssh" }
     var isLocal: Bool { !isGroup && sessionProtocol == "local" }
 
+    /// 鼠标悬停时显示的连接信息；会话列表本身只渲染 `name`。
     var subtitle: String {
         if isGroup { return "" }
         if isLocal { return "本地终端" }

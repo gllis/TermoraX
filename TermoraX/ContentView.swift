@@ -2,11 +2,15 @@
 //  ContentView.swift
 //  TermoraX
 //
+//  主界面：左侧会话树、中间标签 + 终端、右侧 SFTP、底部快速命令。
+//  面板显隐与宽度写入 AppStorage；打开的标签由 WorkspaceController 定时快照。
+//
 
 import SwiftData
 import SwiftUI
 import AppKit
 
+/// 主窗口内容。三栏布局，工具栏切换面板，sheet 编辑会话与快速命令。
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.openSettings) private var openSettings
@@ -299,6 +303,7 @@ struct ContentView: View {
     }
 }
 
+/// 给主窗口打上 `TermoraX.main`，关闭代理只接管这一扇，避免误伤设置窗口。
 private struct WindowIdentifierSetter: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()

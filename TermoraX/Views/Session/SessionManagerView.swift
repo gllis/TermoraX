@@ -2,6 +2,8 @@
 //  SessionManagerView.swift
 //  TermoraX
 //
+//  左侧会话树。不用系统 List，以便把行距收到 8pt；双击连接，右键编辑。
+//
 
 import SwiftData
 import SwiftUI

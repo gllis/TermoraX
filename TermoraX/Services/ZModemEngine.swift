@@ -2,10 +2,14 @@
 //  ZModemEngine.swift
 //  TermoraX
 //
+//  终端内嵌 ZMODEM：远端 `sz` 下载到本机，本机 `rz` 上传。
+//  帧头十六进制必须小写；CRC 后不要多写两个 0 字节。详见 Tools/ZModemCheck。
+//
 
 import AppKit
 import Foundation
 
+/// 从 PTY 字节流里识别 ZMODEM 会话，与普通终端输出分流。
 final class ZModemEngine {
     private enum Mode {
         case idle

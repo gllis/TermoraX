@@ -2,6 +2,8 @@
 //  FileManagerView.swift
 //  TermoraX
 //
+//  双栏文件管理：本机目录 + 远程 SFTP。可嵌在标签页或右侧面板。
+//
 
 import AppKit
 import SwiftUI

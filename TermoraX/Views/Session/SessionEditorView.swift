@@ -2,6 +2,8 @@
 //  SessionEditorView.swift
 //  TermoraX
 //
+//  新建 / 编辑会话。端口不用带千分位的 Number 格式；窗口按内容高度收紧。
+//
 
 import SwiftData
 import SwiftUI

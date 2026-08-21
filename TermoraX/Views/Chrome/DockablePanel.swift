@@ -2,6 +2,8 @@
 //  DockablePanel.swift
 //  TermoraX
 //
+//  侧栏/底栏容器与拖拽改尺寸。手柄用全局坐标，避免滚动视图吃掉鼠标事件。
+//
 
 import AppKit
 import SwiftUI
@@ -89,6 +91,7 @@ struct AutoHideStrip: View {
     }
 }
 
+/// 拖拽改面板尺寸；按下时记下全局坐标，松手再写入 AppStorage。
 struct PanelResizeHandle: View {
     var vertical: Bool = true
     var inverted: Bool = false

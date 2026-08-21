@@ -2,6 +2,8 @@
 //  QuickCommandIcon.swift
 //  TermoraX
 //
+//  根据命令名猜测 SF Symbol，并生成彩色方块图标。
+//
 
 import SwiftUI
 

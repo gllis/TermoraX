@@ -2,6 +2,8 @@
 //  TransferCenter.swift
 //  TermoraX
 //
+//  SFTP 任务列表与当前 ZMODEM 进度，供横幅和文件管理器底部列表显示。
+//
 
 import Foundation
 import Observation
@@ -36,6 +38,7 @@ struct ZModemProgress: Equatable {
     var savedPath: String? = nil
 }
 
+/// SFTP 与 ZMODEM 共用的进度中心，由主窗口观察。
 @Observable
 final class TransferCenter {
     var zmodem: ZModemProgress?

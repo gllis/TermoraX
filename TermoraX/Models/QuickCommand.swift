@@ -2,10 +2,13 @@
 //  QuickCommand.swift
 //  TermoraX
 //
+//  底部「快速命令」一条记录：名称、要发送的文本、图标与色板索引。
+//
 
 import Foundation
 import SwiftData
 
+/// 一键发送到当前（或全部）终端的命令模板。
 @Model
 final class QuickCommand {
     var id: UUID

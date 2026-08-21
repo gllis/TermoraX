@@ -2,12 +2,16 @@
 //  TerminalRegistry.swift
 //  TermoraX
 //
+//  按标签 ID 持有 TermoraTerminalView，避免 SwiftUI 刷新时拆掉 PTY。
+//  字体、复制粘贴、ZMODEM 与 pty 写路径都在 TermoraTerminalView 里。
+//
 
 import AppKit
 import Darwin
 import Foundation
 import SwiftTerm
 
+/// 终端视图仓库。关闭标签时必须 `close`，否则 ssh 进程会残留。
 final class TerminalRegistry {
     static let shared = TerminalRegistry()
 
@@ -47,6 +51,7 @@ final class TerminalRegistry {
     }
 }
 
+/// 等宽字体 + 中文 cascade，避免 CJK 变成 tofu。
 enum TerminalFont {
     static func make(size: CGFloat = 13) -> NSFont {
         let base = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
@@ -71,6 +76,7 @@ enum TerminalFont {
     }
 }
 
+/// SwiftTerm 终端 + 本地/SSH 子进程。ZMODEM 帧走串行 pty 写，避免和键盘输入乱序。
 final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProcessDelegate {
     let zmodem = ZModemEngine()
     private(set) var process: LocalProcess!
@@ -381,6 +387,7 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 }
 
+/// SwiftUI 宿主：把同一个 `TermoraTerminalView` 重新挂到新的 NSView 树上，PTY 不断。
 final class TerminalHostView: NSView {
     let terminal: TermoraTerminalView
 

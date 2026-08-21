@@ -2,6 +2,8 @@
 //  SFTPClient.swift
 //  TermoraX
 //
+//  通过 `ssh -s sftp` 走 SFTP 子系统，自己解析 packet，不依赖 libssh。
+//
 
 import Foundation
 
