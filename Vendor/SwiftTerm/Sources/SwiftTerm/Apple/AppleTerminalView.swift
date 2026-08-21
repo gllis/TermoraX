@@ -458,6 +458,59 @@ extension TerminalView {
         return ViewLineInfo(attrStr: res, images: line.images, eastAsianGlyphs: eastAsianGlyphs)
     }
 
+    /// Paints one opaque rectangle per cell background before any glyph is drawn.
+    /// The attributed string holds exactly one UTF-16 unit per terminal cell, so
+    /// string indices are column numbers. Doing this up front is what makes
+    /// reverse video, colored backgrounds and the selection highlight visible:
+    /// filling per glyph run afterwards leaves cells either unpainted or hidden
+    /// underneath a previous run.
+    func drawCellBackgrounds(_ attrStr: NSAttributedString, lineOrigin: CGPoint, context: CGContext) {
+        let cells = min(attrStr.length, terminal.cols)
+        guard cells > 0 else { return }
+
+        func backgroundColor(at index: Int) -> TTColor? {
+            if let selected = attrStr.attribute(.selectionBackgroundColor, at: index, effectiveRange: nil) as? TTColor {
+                return selected
+            }
+            return attrStr.attribute(.backgroundColor, at: index, effectiveRange: nil) as? TTColor
+        }
+
+        context.saveGState()
+        context.setShouldAntialias(false)
+
+        var runStart = 0
+        var runColor = backgroundColor(at: 0)
+
+        func fill(upTo end: Int) {
+            guard let color = runColor, end > runStart else { return }
+            var width = cellDimension.width * CGFloat(end - runStart)
+            if end >= terminal.cols {
+                // Stretch the last cell so no sliver of the view is left unpainted.
+                width = max(width, frame.width - cellDimension.width * CGFloat(runStart))
+            }
+            context.setFillColor(color.cgColor)
+            context.fill(
+                CGRect(
+                    x: lineOrigin.x + cellDimension.width * CGFloat(runStart),
+                    y: lineOrigin.y,
+                    width: width,
+                    height: cellDimension.height
+                )
+            )
+        }
+
+        for col in 1..<cells {
+            let color = backgroundColor(at: col)
+            if color != runColor {
+                fill(upTo: col)
+                runStart = col
+                runColor = color
+            }
+        }
+        fill(upTo: cells)
+        context.restoreGState()
+    }
+
     func characterNeedsFallbackFont(_ ch: CharData) -> Bool {
         if ch.code == 0 { return false }
         for scalar in ch.getCharacter().unicodeScalars {
@@ -717,6 +770,8 @@ extension TerminalView {
             let lineInfo = buildAttributedString(row: row, line: line, cols: terminal.cols)
             let ctline = CTLineCreateWithAttributedString(lineInfo.attrStr)
 
+            drawCellBackgrounds(lineInfo.attrStr, lineOrigin: lineOrigin, context: context)
+
             var col = 0
             for run in CTLineGetGlyphRuns(ctline) as? [CTRun] ?? [] {
                 let runGlyphsCount = CTRunGetGlyphCount(run)
@@ -740,49 +795,6 @@ extension TerminalView {
                         x: lineOrigin.x + cellDimension.width * CGFloat(cell),
                         y: lineOrigin.y + yOffset
                     )
-                }
-
-                var backgroundColor: TTColor?
-                if runAttributes.keys.contains(.selectionBackgroundColor) {
-                    backgroundColor = runAttributes[.selectionBackgroundColor] as? TTColor
-                } else if runAttributes.keys.contains(.backgroundColor) {
-                    backgroundColor = runAttributes[.backgroundColor] as? TTColor
-                }
-
-                if let backgroundColor = backgroundColor {
-                    context.saveGState ()
-
-                    context.setShouldAntialias (false)
-                    context.setLineCap (.square)
-                    context.setLineWidth(0)
-                    context.setFillColor(backgroundColor.cgColor)
-
-                    let transform = CGAffineTransform (translationX: positions[0].x, y: 0)
-
-                    var size = CGSize (width: CGFloat (cellDimension.width * CGFloat(runGlyphsCount)), height: cellDimension.height)
-                    var origin: CGPoint = lineOrigin
-
-                    #if (lastLineExtends)
-                    // Stretch last col/row to full frame size.
-                    // TODO: need apply this kind of fixup to selection too
-                    if (row-terminal.buffer.yDisp) >= terminal.rows - 1 {
-                        let missing = frame.height - (cellDimension.height + CGFloat(row) + 1)
-                        size.height += missing
-                        origin.y -= missing
-                    }
-                    #endif
-
-                    if col + runGlyphsCount >= terminal.cols {
-                        size.width += frame.width - size.width
-                    }
-                    
-                    let rect = CGRect (origin: origin, size: size)
-                    #if os(macOS)
-                    rect.applying(transform).fill(using: .destinationOver)
-                    #else
-                    context.fill(rect.applying(transform))
-                    #endif
-                    context.restoreGState()
                 }
 
                 nativeForegroundColor.set()

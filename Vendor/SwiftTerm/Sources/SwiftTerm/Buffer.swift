@@ -1083,7 +1083,11 @@ public final class Buffer {
         }
         let bufferRow = _lines[_y+_yBase]
         var empty = CharData.Null
-        empty.attribute = curAttr
+        // The placeholder cell of a wide character must share that character's
+        // attributes. `curAttr` here is never updated and defaults to
+        // Attribute.empty, whose background is defaultInvertedColor, which
+        // painted a light block after every CJK character.
+        empty.attribute = charData.attribute
         // insert mode: move characters to right
         if insertMode {
             // right shift cells according to the width

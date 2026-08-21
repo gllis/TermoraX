@@ -59,11 +59,13 @@ final class ZModemEngine {
     private var sendIndex = 0
     private var sendOffset: UInt64 = 0
     private var sendData = Data()
-    private var receiveDirectory = AppPaths.zmodemReceiveFolder
+    var receiveDirectory = AppPaths.zmodemReceiveFolder
 
     var onProgress: ((ZModemProgress) -> Void)?
     var sendToHost: ((ArraySlice<UInt8>) -> Void)?
     var onPassthrough: (([UInt8]) -> Void)?
+    /// Asks for the files to upload. Replaced by tests to run without AppKit.
+    var filePicker: ((@escaping ([URL]?) -> Void) -> Void)?
 
     var isActive: Bool { mode != .idle }
 
@@ -360,6 +362,17 @@ final class ZModemEngine {
     }
 
     private func pickFilesToSend() {
+        if let filePicker {
+            filePicker { [weak self] urls in
+                guard let self else { return }
+                if let urls, !urls.isEmpty {
+                    self.beginSending(urls)
+                } else {
+                    self.failTransfer("已取消发送")
+                }
+            }
+            return
+        }
         let panel = NSOpenPanel()
         panel.title = "选择要发送到远程主机的文件（rz）"
         panel.message = "这些文件会通过 ZMODEM 发送到远程 rz。"
@@ -657,13 +670,13 @@ final class ZModemEngine {
         var bytes: [UInt8] = [zpad, zpad, zdle, zhex]
         let payload = [type] + flags
         var crc: UInt16 = 0
+        // lrzsz's zgeth1() only decodes lowercase hex digits.
         for byte in payload {
             crc = crc16(byte, crc)
-            bytes.append(contentsOf: Array(String(format: "%02X", byte).utf8))
+            bytes.append(contentsOf: Array(String(format: "%02x", byte).utf8))
         }
-        crc = crc16(0, crc16(0, crc))
-        bytes.append(contentsOf: Array(String(format: "%02X", crc >> 8).utf8))
-        bytes.append(contentsOf: Array(String(format: "%02X", crc & 0xFF).utf8))
+        bytes.append(contentsOf: Array(String(format: "%02x", crc >> 8).utf8))
+        bytes.append(contentsOf: Array(String(format: "%02x", crc & 0xFF).utf8))
         // Match lrzsz: CR followed by LF with the parity bit set.
         bytes.append(contentsOf: [0x0D, 0x8A])
         if type != zack && type != zfin {
@@ -682,7 +695,6 @@ final class ZModemEngine {
         appendEscaped(payload, into: &encoded)
         var crc: UInt16 = 0
         for byte in payload { crc = crc16(byte, crc) }
-        crc = crc16(0, crc16(0, crc))
         appendEscaped([UInt8(crc >> 8), UInt8(crc & 0xFF)], into: &encoded)
         sendToHost?(encoded[...])
     }
@@ -712,7 +724,6 @@ final class ZModemEngine {
         var crc: UInt16 = 0
         for byte in data { crc = crc16(byte, crc) }
         crc = crc16(end, crc)
-        crc = crc16(0, crc16(0, crc))
         appendEscaped([UInt8(crc >> 8), UInt8(crc & 0xFF)], into: &encoded)
         if end == zcrcw {
             // ZMODEM requires XON after a wait-for-ACK subpacket.
@@ -733,8 +744,9 @@ final class ZModemEngine {
     }
 
     private func needsEscape(_ byte: UInt8) -> Bool {
+        // 0xFF must stay literal: ZDLE 0xBF is a protocol error for lrzsz's zdlread.
         if byte == zdle || byte == 0x10 || byte == 0x11 || byte == 0x13 ||
-            byte == 0x90 || byte == 0x91 || byte == 0x93 || byte == 0xFF {
+            byte == 0x90 || byte == 0x91 || byte == 0x93 {
             return true
         }
         if escapeControls && (byte & 0x60) == 0 {

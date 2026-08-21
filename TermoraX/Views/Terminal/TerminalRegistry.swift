@@ -66,6 +66,30 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
     private var launch: (() -> Void)?
     private var syncingTerminalSize = false
     private var sizeNotifyWork: DispatchWorkItem?
+    /// ZMODEM frames must reach the pty in order, so they bypass the concurrent
+    /// DispatchIO writes used for keyboard input.
+    private let ptyWriteQueue = DispatchQueue(label: "com.gllis.TermoraX.pty-write")
+
+    private func writeToPty(_ bytes: ArraySlice<UInt8>) {
+        guard let process, process.running else { return }
+        let fd = process.childfd
+        let payload = Array(bytes)
+        ptyWriteQueue.async {
+            var offset = 0
+            while offset < payload.count {
+                let written = payload[offset...].withUnsafeBufferPointer { buffer in
+                    write(fd, buffer.baseAddress!, buffer.count)
+                }
+                if written > 0 {
+                    offset += written
+                } else if errno == EAGAIN || errno == EINTR {
+                    usleep(1000)
+                } else {
+                    return
+                }
+            }
+        }
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -86,7 +110,7 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
         caretColor = NSColor(calibratedWhite: 0.92, alpha: 1)
         caretTextColor = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1)
         zmodem.sendToHost = { [weak self] bytes in
-            self?.process.send(data: bytes)
+            self?.writeToPty(bytes)
         }
         zmodem.onProgress = { [weak self] progress in
             DispatchQueue.main.async {
