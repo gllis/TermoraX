@@ -2,7 +2,7 @@
 //  FileManagerView.swift
 //  TermoraX
 //
-//  双栏文件管理：本机目录 + 远程 SFTP。可嵌在标签页或右侧面板。
+//  双栏文件管理：本机目录 + 远程 SFTP。双击进目录，可上传/下载文件或文件夹。
 //
 
 import AppKit
@@ -101,13 +101,13 @@ struct FileManagerView: View {
                     } label: {
                         Image(systemName: "arrow.up.to.line")
                     }
-                    .help("上传选中的本机文件")
+                    .help("上传选中的本机文件或文件夹")
                     Button {
                         model.downloadSelected()
                     } label: {
                         Image(systemName: "arrow.down.to.line")
                     }
-                    .help("下载选中的远程文件")
+                    .help("下载选中的远程文件或文件夹")
                     Button {
                         model.mkdirRemote()
                     } label: {
@@ -130,14 +130,33 @@ struct FileManagerView: View {
                 }
                 .width(70)
             }
-            .onTapGesture(count: 2) {
+            .background {
+                TableDoubleClickMonitor { row in
+                    guard entries.indices.contains(row) else { return }
+                    let entry = entries[row]
+                    if isRemote {
+                        model.openRemote(entry)
+                    } else {
+                        model.openLocal(entry)
+                    }
+                }
+            }
+            .onKeyPress(.return) {
                 if isRemote {
                     model.openRemoteSelection()
                 } else {
                     model.openLocalSelection()
                 }
+                return .handled
             }
             .contextMenu {
+                Button("打开") {
+                    if isRemote {
+                        model.openRemoteSelection()
+                    } else {
+                        model.openLocalSelection()
+                    }
+                }
                 if isRemote {
                     Button("下载") { model.downloadSelected() }
                     Button("删除", role: .destructive) { model.deleteRemote() }
@@ -187,6 +206,7 @@ struct FileEntry: Identifiable, Hashable {
     var name: String
     var path: String
     var isDirectory: Bool
+    var isSymlink: Bool = false
     var size: UInt64
     var systemImage: String
     var sizeText: String {
@@ -217,14 +237,17 @@ final class FileBrowserModel {
         localPath = url.path
         let items = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey], options: [.skipsHiddenFiles])) ?? []
         localEntries = items.map { item in
-            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            let size = UInt64((try? item.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .isSymbolicLinkKey])
+            let isDir = values?.isDirectory ?? false
+            let isLink = values?.isSymbolicLink ?? false
+            let size = UInt64(values?.fileSize ?? 0)
             return FileEntry(
                 name: item.lastPathComponent,
                 path: item.path,
                 isDirectory: isDir,
+                isSymlink: isLink,
                 size: size,
-                systemImage: isDir ? "folder.fill" : "doc"
+                systemImage: isDir ? "folder.fill" : (isLink ? "link" : "doc")
             )
         }
         .sorted {
@@ -315,22 +338,41 @@ final class FileBrowserModel {
 
     func openLocalSelection() {
         guard let selected = localEntries.first(where: { $0.id == selectedLocal }) else { return }
-        if selected.isDirectory {
-            localPath = selected.path
-            loadLocal()
-        }
+        openLocal(selected)
     }
 
     func openRemoteSelection() {
         guard let selected = remoteEntries.first(where: { $0.id == selectedRemote }) else { return }
-        if selected.isDirectory {
-            remotePath = selected.path
-            refreshRemote()
+        openRemote(selected)
+    }
+
+    func openLocal(_ entry: FileEntry) {
+        selectedLocal = entry.id
+        guard entry.isDirectory else { return }
+        localPath = entry.path
+        selectedLocal = nil
+        loadLocal()
+    }
+
+    func openRemote(_ entry: FileEntry) {
+        selectedRemote = entry.id
+        if entry.isDirectory {
+            enterRemote(entry.path)
+            return
+        }
+        guard entry.isSymlink else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                guard let attrs = try self?.client?.stat(entry.path), attrs.isDirectory else { return }
+                DispatchQueue.main.async { self?.enterRemote(entry.path) }
+            } catch {
+                DispatchQueue.main.async { self?.errorMessage = error.localizedDescription }
+            }
         }
     }
 
     func uploadSelected() {
-        guard let selected = localEntries.first(where: { $0.id == selectedLocal }), !selected.isDirectory else { return }
+        guard let selected = localEntries.first(where: { $0.id == selectedLocal }) else { return }
         let remote = (remotePath.hasSuffix("/") ? remotePath : remotePath + "/") + selected.name
         transfer(name: selected.name, kind: .upload) { job, report in
             try self.client?.upload(local: URL(fileURLWithPath: selected.path), remote: remote, progress: report)
@@ -340,13 +382,19 @@ final class FileBrowserModel {
     }
 
     func downloadSelected() {
-        guard let selected = remoteEntries.first(where: { $0.id == selectedRemote }), !selected.isDirectory else { return }
+        guard let selected = remoteEntries.first(where: { $0.id == selectedRemote }) else { return }
         let local = URL(fileURLWithPath: localPath).appendingPathComponent(selected.name)
         transfer(name: selected.name, kind: .download) { job, report in
             try self.client?.download(remote: selected.path, local: local, progress: report)
             DispatchQueue.main.async { self.loadLocal() }
             _ = job
         }
+    }
+
+    private func enterRemote(_ path: String) {
+        remotePath = path
+        selectedRemote = nil
+        refreshRemote()
     }
 
     func mkdirRemote() {
@@ -426,8 +474,83 @@ final class FileBrowserModel {
             name: item.name,
             path: item.path,
             isDirectory: item.isDirectory,
+            isSymlink: item.isSymlink,
             size: item.size,
             systemImage: item.systemImage
         )
+    }
+}
+
+/// SwiftUI `Table` 会吃掉 `onTapGesture`，改挂底层 `NSTableView` 的双击。
+private struct TableDoubleClickMonitor: NSViewRepresentable {
+    var action: (Int) -> Void
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ view: MonitorView, context: Context) {
+        view.action = action
+    }
+
+    final class MonitorView: NSView {
+        var action: ((Int) -> Void)?
+        private var monitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                removeMonitor()
+            } else {
+                installMonitor()
+            }
+        }
+
+        deinit {
+            removeMonitor()
+        }
+
+        private func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+                guard let self, event.clickCount == 2, event.window === self.window else {
+                    return event
+                }
+                guard let table = self.ownedTable() else { return event }
+                let point = table.convert(event.locationInWindow, from: nil)
+                let row = table.row(at: point)
+                if row >= 0 {
+                    DispatchQueue.main.async { self.action?(row) }
+                }
+                return event
+            }
+        }
+
+        private func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func ownedTable() -> NSTableView? {
+            var current: NSView? = self
+            while let view = current {
+                let tables = Self.tables(in: view)
+                if tables.count == 1 { return tables[0] }
+                if tables.count > 1 { return nil }
+                current = view.superview
+            }
+            return nil
+        }
+
+        private static func tables(in view: NSView) -> [NSTableView] {
+            if let table = view as? NSTableView { return [table] }
+            return view.subviews.flatMap { tables(in: $0) }
+        }
     }
 }

@@ -9,7 +9,7 @@ macOS 上的 SSH / 本地终端客户端：会话树、多标签终端、SFTP、
 - **会话管理**：分组树、SSH / 本地终端、双击连接、展开状态会记住
 - **多标签**：SSH、SFTP、本地 shell；标签过多时可横滑，右侧菜单列出全部标签
 - **终端**：等宽字体 + 中文 cascade、选区复制、可选「选中即复制 / 右键粘贴」
-- **SFTP**：本机 / 远程双栏，上传下载
+- **SFTP**：本机 / 远程双栏，双击进目录，可上传下载文件或文件夹
 - **ZMODEM**：远端 `sz` 下载到本机指定目录，本机选择文件后走 `rz` 协议上传
 - **快速命令**：底部方块，发送到当前标签或全部终端
 - **密码**：AES-GCM 保险库，不把明文写进 SwiftData
@@ -98,6 +98,7 @@ ContentView
 `SSHCommand` 生成 `/usr/bin/ssh` 参数：
 
 - `StrictHostKeyChecking=accept-new`、`ControlMaster=auto`
+- 终端会话加 `-e none`：关掉 `~` 转义，否则二进制上传里的 CR + `~` 会被 ssh 当命令（详见 ZMODEM 一节）
 - 密码登录：`SSH_ASKPASS` + 临时口令文件（约 60 秒后删除）
 - 私钥登录：`-i` + `IdentitiesOnly=yes`
 - 保活：`ServerAliveInterval` 等于设置里的活动间隔
@@ -107,9 +108,21 @@ ContentView
 - 十六进制帧头必须 **小写**（lrzsz 的 `zgeth1` 拒大写）
 - CRC 后不要再刷两个 0 字节
 - `0xFF` 不要转义
+- 子包保持 1024 字节，`rz` 的缓冲区就这么大
+- 发送要**按窗口分批**（256 KiB，末包用 ZCRCW 等 ZACK）。一次把整个文件灌进 pty 后，ZRPOS 重传会和旧数据交错，`rz` 超时退出，剩下的字节被远端 shell 当命令执行——目录里就会冒出一堆乱码空文件
+- 中止时先 `discardPendingSends` 丢掉排队中的写入，再发 CAN
+- **ssh 必须带 `-e none`**。ZDLE 转义管不了 CR（0x0D）和 `~`（0x7E），而 ssh 客户端会把上行数据里的 CR + `~` 当转义命令：`~~` 合成一个字节（数据静默损坏）、`~^Z` 挂起 ssh、`~.` 直接断开。上传哪个文件会炸完全取决于它的字节，`sz` 下载不受影响（转义只作用于上行）
 - 协议数据必须 **串行写入 pty**，不能和键盘输入抢 `DispatchIO`
 
-更细的约定见 `Tools/ZModemCheck`。
+更细的约定见 `Tools/ZModemCheck`：
+
+```bash
+swiftc -O -o /tmp/zmcheck Tools/ZModemCheck/main.swift Tools/ZModemCheck/Stubs.swift \
+  TermoraX/Services/ZModemEngine.swift TermoraX/Services/AppPaths.swift TermoraX/App/AppSettings.swift
+/tmp/zmcheck 4096 200000 20000000 --file ~/Downloads/some.zip
+```
+
+`silent(...)` 那几项模拟「`rz` 不再应答」，检查引擎最多再写一个窗口就停手。
 
 ## 开发备忘
 

@@ -116,16 +116,17 @@ final class SFTPClient: @unchecked Sendable {
             let count = try reader.u32()
             for _ in 0..<count {
                 let name = try reader.string()
-                _ = try reader.string()
+                let longname = try reader.string()
                 let attrs = try reader.attrs()
                 if name == "." || name == ".." { continue }
+                let kind = Self.entryKind(attrs: attrs, longname: longname)
                 let joined = resolved.hasSuffix("/") ? resolved + name : resolved + "/" + name
                 entries.append(
                     SFTPEntry(
                         name: name,
                         path: joined,
-                        isDirectory: attrs.isDirectory,
-                        isSymlink: attrs.isSymlink,
+                        isDirectory: kind.isDirectory,
+                        isSymlink: kind.isSymlink,
                         size: attrs.size,
                         modified: attrs.modified,
                         permissions: attrs.permissionText
@@ -150,6 +151,20 @@ final class SFTPClient: @unchecked Sendable {
         try expectOK(transact(type: 14, payload: writer.payload))
     }
 
+    func mkdirIfNeeded(_ path: String) throws {
+        do {
+            try mkdir(path)
+        } catch let error as SFTPError {
+            if case .status(let code, _) = error, code == 11 {
+                return
+            }
+            if case .status = error, (try? stat(path))?.isDirectory == true {
+                return
+            }
+            throw error
+        }
+    }
+
     func remove(path: String, isDirectory: Bool) throws {
         var writer = ByteWriter()
         writer.string(path)
@@ -168,9 +183,87 @@ final class SFTPClient: @unchecked Sendable {
         local: URL,
         progress: ((Int64, Int64) -> Void)? = nil
     ) throws {
+        let attrs = try stat(remote)
+        let isDirectory = attrs.isDirectory
+        let total = isDirectory ? (try remoteTreeSize(remote)) : Int64(attrs.size)
+        var transferred: Int64 = 0
+        try downloadItem(remote: remote, local: local, isDirectory: isDirectory) { delta in
+            transferred += delta
+            progress?(transferred, max(total, transferred))
+        }
+    }
+
+    func upload(
+        local: URL,
+        remote: String,
+        progress: ((Int64, Int64) -> Void)? = nil
+    ) throws {
+        let total = Self.localTreeSize(local)
+        var transferred: Int64 = 0
+        try uploadItem(local: local, remote: remote) { delta in
+            transferred += delta
+            progress?(transferred, max(total, transferred))
+        }
+    }
+
+    private func uploadItem(local: URL, remote: String, onBytes: (Int64) -> Void) throws {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory) else {
+            throw SFTPError.protocolFailure("本地文件不存在")
+        }
+        if isDirectory.boolValue {
+            try mkdirIfNeeded(remote)
+            let items = try FileManager.default.contentsOfDirectory(
+                at: local,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            for item in items.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+                try uploadItem(local: item, remote: join(remote, item.lastPathComponent), onBytes: onBytes)
+            }
+            return
+        }
+        try uploadFile(local: local, remote: remote, onBytes: onBytes)
+    }
+
+    private func uploadFile(local: URL, remote: String, onBytes: (Int64) -> Void) throws {
+        let handle = try open(path: remote, flags: 0x0002 | 0x0008 | 0x0010)
+        defer { try? closeHandle(handle) }
+        let file = try FileHandle(forReadingFrom: local)
+        defer { try? file.close() }
+        var offset: UInt64 = 0
+        while true {
+            let chunk = try file.read(upToCount: 32 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            var writer = ByteWriter()
+            writer.blob(handle)
+            writer.u64(offset)
+            writer.blob(chunk)
+            try expectOK(transact(type: 6, payload: writer.payload))
+            offset += UInt64(chunk.count)
+            onBytes(Int64(chunk.count))
+        }
+    }
+
+    private func downloadItem(remote: String, local: URL, isDirectory: Bool, onBytes: (Int64) -> Void) throws {
+        if isDirectory {
+            try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+            for item in try list(path: remote) {
+                try downloadItem(
+                    remote: item.path,
+                    local: local.appendingPathComponent(item.name),
+                    isDirectory: item.isDirectory,
+                    onBytes: onBytes
+                )
+            }
+            return
+        }
+        try downloadFile(remote: remote, local: local, onBytes: onBytes)
+    }
+
+    private func downloadFile(remote: String, local: URL, onBytes: (Int64) -> Void) throws {
         let handle = try open(path: remote, flags: 0x0001)
         defer { try? closeHandle(handle) }
-        let total = (try? stat(remote).size).map(Int64.init) ?? 0
         FileManager.default.createFile(atPath: local.path, contents: nil)
         let out = try FileHandle(forWritingTo: local)
         defer { try? out.close() }
@@ -193,30 +286,47 @@ final class SFTPClient: @unchecked Sendable {
             if chunk.isEmpty { break }
             try out.write(contentsOf: chunk)
             offset += UInt64(chunk.count)
-            progress?(Int64(offset), total)
+            onBytes(Int64(chunk.count))
         }
     }
 
-    func upload(
-        local: URL,
-        remote: String,
-        progress: ((Int64, Int64) -> Void)? = nil
-    ) throws {
-        let data = try Data(contentsOf: local)
-        let handle = try open(path: remote, flags: 0x0002 | 0x0008 | 0x0010)
-        defer { try? closeHandle(handle) }
-        var offset: UInt64 = 0
-        let total = Int64(data.count)
-        while offset < data.count {
-            let end = min(offset + 32 * 1024, UInt64(data.count))
-            let slice = data[data.index(data.startIndex, offsetBy: Int(offset))..<data.index(data.startIndex, offsetBy: Int(end))]
-            var writer = ByteWriter()
-            writer.blob(handle)
-            writer.u64(offset)
-            writer.blob(Data(slice))
-            try expectOK(transact(type: 6, payload: writer.payload))
-            offset = end
-            progress?(Int64(offset), total)
+    private func remoteTreeSize(_ path: String) throws -> Int64 {
+        let attrs = try stat(path)
+        if !attrs.isDirectory {
+            return Int64(attrs.size)
+        }
+        return try list(path: path).reduce(Int64(0)) { total, item in
+            total + (item.isDirectory ? (try remoteTreeSize(item.path)) : Int64(item.size))
+        }
+    }
+
+    private static func localTreeSize(_ url: URL) -> Int64 {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return 0 }
+        if !isDirectory.boolValue {
+            return Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        let items = (try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return items.reduce(0) { $0 + localTreeSize($1) }
+    }
+
+    private func join(_ directory: String, _ name: String) -> String {
+        directory.hasSuffix("/") ? directory + name : directory + "/" + name
+    }
+
+    /// 部分服务器的 READDIR 不带权限位；退回解析 longname 第一列（`drwx…` / `lrwx…`）。
+    private static func entryKind(attrs: SFTPAttributes, longname: String) -> (isDirectory: Bool, isSymlink: Bool) {
+        if attrs.permissions != 0 {
+            return (attrs.isDirectory, attrs.isSymlink)
+        }
+        switch longname.first {
+        case "d": return (true, false)
+        case "l": return (false, true)
+        default: return (false, false)
         }
     }
 

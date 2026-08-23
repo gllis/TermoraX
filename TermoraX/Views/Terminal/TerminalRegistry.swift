@@ -76,6 +76,24 @@ enum TerminalFont {
     }
 }
 
+/// 排队中的 pty 写入的世代号。中止 ZMODEM 时递增，让还没落地的数据帧作废。
+final class PtyWriteEpoch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    var current: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func bump() {
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+}
+
 /// SwiftTerm 终端 + 本地/SSH 子进程。ZMODEM 帧走串行 pty 写，避免和键盘输入乱序。
 final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProcessDelegate {
     let zmodem = ZModemEngine()
@@ -89,14 +107,18 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
     /// ZMODEM frames must reach the pty in order, so they bypass the concurrent
     /// DispatchIO writes used for keyboard input.
     private let ptyWriteQueue = DispatchQueue(label: "com.gllis.TermoraX.pty-write")
+    private let ptyWriteEpoch = PtyWriteEpoch()
 
     private func writeToPty(_ bytes: ArraySlice<UInt8>) {
         guard let process, process.running else { return }
         let fd = process.childfd
         let payload = Array(bytes)
+        let epoch = ptyWriteEpoch.current
+        let epochBox = ptyWriteEpoch
         ptyWriteQueue.async {
             var offset = 0
             while offset < payload.count {
+                guard epochBox.current == epoch else { return }
                 let written = payload[offset...].withUnsafeBufferPointer { buffer in
                     write(fd, buffer.baseAddress!, buffer.count)
                 }
@@ -131,6 +153,9 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
         caretTextColor = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1)
         zmodem.sendToHost = { [weak self] bytes in
             self?.writeToPty(bytes)
+        }
+        zmodem.discardPendingSends = { [weak self] in
+            self?.ptyWriteEpoch.bump()
         }
         zmodem.onProgress = { [weak self] progress in
             DispatchQueue.main.async {

@@ -90,7 +90,10 @@ enum SSHCommand {
     }
 
     static func terminalArguments(for target: SSHTarget) -> [String] {
-        baseOptions(for: target) + ["-tt", "\(user(username: target.username))@\(target.host)"]
+        // `-e none` 关掉 ssh 的 `~` 转义。默认下，我们写进 pty 的数据里只要出现
+        // CR + `~`，ssh 就会把下一个字节当命令：`~~` 会被合成一个（ZMODEM 数据静默
+        // 损坏），`~^Z` 挂起 ssh，`~.` 直接断开（退出码 255）。二进制上传必然踩到。
+        baseOptions(for: target) + ["-e", "none", "-tt", "\(user(username: target.username))@\(target.host)"]
     }
 
     static func sftpArguments(for node: SessionNode) -> [String] {

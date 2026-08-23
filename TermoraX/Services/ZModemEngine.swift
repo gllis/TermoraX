@@ -3,7 +3,8 @@
 //  TermoraX
 //
 //  终端内嵌 ZMODEM：远端 `sz` 下载到本机，本机 `rz` 上传。
-//  帧头十六进制必须小写；CRC 后不要多写两个 0 字节。详见 Tools/ZModemCheck。
+//  帧头十六进制必须小写；CRC 后不要多写两个 0 字节。
+//  发送按窗口分批并等 ZACK，中止时先丢排队数据。详见 Tools/ZModemCheck。
 //
 
 import AppKit
@@ -62,12 +63,23 @@ final class ZModemEngine {
     private var sendFiles: [URL] = []
     private var sendIndex = 0
     private var sendOffset: UInt64 = 0
-    private var sendData = Data()
+    private var sendHandle: FileHandle?
+    private var remoteBufferSize = 0
     var receiveDirectory = AppPaths.zmodemReceiveFolder
+
+    /// One subpacket. lrzsz's `rz` reads 1024-byte subpackets by default; larger
+    /// ones overflow its buffer and turn into a retransmit loop.
+    private let sendSubpacketSize = 1024
+    /// Bytes sent before waiting for a ZACK. ZMODEM allows pure streaming, but
+    /// then a stalled or dead `rz` leaves the rest of the file queued, and the
+    /// remote shell executes it as commands.
+    private let sendWindowSize = 256 * 1024
 
     var onProgress: ((ZModemProgress) -> Void)?
     var sendToHost: ((ArraySlice<UInt8>) -> Void)?
     var onPassthrough: (([UInt8]) -> Void)?
+    /// Drops bytes handed to `sendToHost` that have not reached the pty yet.
+    var discardPendingSends: (() -> Void)?
     /// Asks for the files to upload. Replaced by tests to run without AppKit.
     var filePicker: ((@escaping ([URL]?) -> Void) -> Void)?
 
@@ -75,6 +87,7 @@ final class ZModemEngine {
 
     private var finishWork: DispatchWorkItem?
     private var offerWatch: DispatchWorkItem?
+    private var ackWatch: DispatchWorkItem?
     private var lastRemoteZRInit = Date.distantPast
 
     func cancel() {
@@ -82,6 +95,10 @@ final class ZModemEngine {
     }
 
     private func abortRemote() {
+        // Drop queued frames first. Once `rz` is gone the remote shell reads
+        // whatever is still in flight, and file data full of `>` bytes turns
+        // into junk files with binary names.
+        discardPendingSends?()
         let can = [UInt8](repeating: zdle, count: 8) + [UInt8](repeating: 0x08, count: 10)
         sendToHost?(can[...])
     }
@@ -228,6 +245,7 @@ final class ZModemEngine {
         case zfin:
             guard mode != .idle else { return }
             finishWork?.cancel()
+            ackWatch?.cancel()
             if mode == .finishingSend || mode == .offeringFile || mode == .transferring {
                 sendToHost?([0x4F, 0x4F][...])
                 finish(message: "发送完成", error: false)
@@ -244,22 +262,25 @@ final class ZModemEngine {
         case zrpos:
             if mode == .offeringFile || mode == .transferring {
                 offerWatch?.cancel()
+                ackWatch?.cancel()
                 mode = .transferring
-                sendOffset = header.position
-                sendDataFrame()
+                sendWindow(from: header.position)
             }
         case zack:
             if mode == .transferring {
-                sendDataFrame()
+                ackWatch?.cancel()
+                sendWindow(from: header.position)
             }
         case zskip:
             if mode == .offeringFile || mode == .transferring {
+                ackWatch?.cancel()
                 sendIndex += 1
                 mode = .offeringFile
                 sendNextFile()
             }
         case znak:
             if mode == .offeringFile || mode == .transferring {
+                ackWatch?.cancel()
                 mode = .offeringFile
                 sendNextFile()
             }
@@ -269,6 +290,7 @@ final class ZModemEngine {
     }
 
     private func handleZRInit() {
+        ackWatch?.cancel()
         switch mode {
         case .pickingFiles:
             // Remote rz retries ZRINIT while the open panel is up — do not send ZFIN.
@@ -295,6 +317,8 @@ final class ZModemEngine {
     private func applyRemoteCapabilities(_ header: Header) {
         guard header.flags.count >= 4 else { return }
         escapeControls = header.flags[3] & escctl != 0
+        // ZRINIT carries the receiver's buffer size in ZP0/ZP1; 0 means unlimited.
+        remoteBufferSize = Int(header.flags[0]) | Int(header.flags[1]) << 8
     }
 
     private func sendZRInit() {
@@ -404,6 +428,8 @@ final class ZModemEngine {
     }
 
     private func sendNextFile() {
+        closeSendHandle()
+        ackWatch?.cancel()
         if sendIndex >= sendFiles.count {
             mode = .finishingSend
             sendHex(type: zfin, flags: [0, 0, 0, 0])
@@ -417,19 +443,34 @@ final class ZModemEngine {
             return
         }
         let url = sendFiles[sendIndex]
-        sendData = (try? Data(contentsOf: url)) ?? Data()
+        let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        // ZMODEM positions are 32-bit, so 4 GiB is the hard ceiling.
+        guard size < Int64(UInt32.max) else {
+            failTransfer("\(url.lastPathComponent) 超过 4 GiB，ZMODEM 无法传输")
+            return
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            failTransfer("无法读取 \(url.lastPathComponent)")
+            return
+        }
+        sendHandle = handle
         sendOffset = 0
         fileName = url.lastPathComponent
-        fileSize = Int64(sendData.count)
+        fileSize = size
         transferred = 0
         let remaining = sendFiles.count - sendIndex
-        let info = Array("\(fileName)\0\(sendData.count) 0 100644 0 1 \(remaining)\0".utf8)
+        let info = Array("\(fileName)\0\(size) 0 100644 0 1 \(remaining)\0".utf8)
         // lrzsz sends ZFILE as a binary header. Keep CRC16 for compatibility.
         sendBin16(type: zfile, flags: [0, 0, 0, 0])
         sendSubframe(info, end: zcrcw)
         mode = .offeringFile
         publish(direction: .send, fileName: fileName, transferred: 0, total: fileSize, message: "正在发送 \(fileName)")
         armOfferWatch()
+    }
+
+    private func closeSendHandle() {
+        try? sendHandle?.close()
+        sendHandle = nil
     }
 
     private func armOfferWatch() {
@@ -442,27 +483,69 @@ final class ZModemEngine {
         DispatchQueue.main.asyncAfter(deadline: .now() + 25, execute: work)
     }
 
-    private func sendDataFrame() {
-        let start = Int(sendOffset)
-        guard start < sendData.count else {
-            sendDataHeader(type: zeof, flags: positionBytes(UInt32(sendData.count)))
+    private func armAckWatch() {
+        ackWatch?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.mode == .transferring else { return }
+            self.failTransfer("远程 rz 长时间无响应，已中止")
+        }
+        ackWatch = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
+    }
+
+    /// Sends one window starting at `position`, then waits for the receiver.
+    ///
+    /// Queueing the whole file at once means a ZRPOS (retransmit) interleaves
+    /// with megabytes of stale data that `rz` has to chew through before it
+    /// finds a header, which times it out — and everything still queued then
+    /// lands in the remote shell.
+    private func sendWindow(from position: UInt64) {
+        guard let handle = sendHandle else { return }
+        if position != sendOffset {
+            // Retransmit: stale queued data would interleave with the new one.
+            discardPendingSends?()
+        }
+        sendOffset = position
+        transferred = Int64(position)
+        do {
+            try handle.seek(toOffset: position)
+        } catch {
+            failTransfer("读取 \(fileName) 失败")
             return
         }
-        sendDataHeader(type: zdata, flags: positionBytes(UInt32(start)))
-        let chunk = 1024
-        var offset = start
-        while offset < sendData.count {
-            let end = min(offset + chunk, sendData.count)
-            let slice = [UInt8](sendData[offset..<end])
-            offset = end
-            let last = offset >= sendData.count
-            sendSubframe(slice, end: last ? zcrce : zcrcg)
-            transferred = Int64(offset)
-            sendOffset = UInt64(offset)
-            publish(direction: .send, fileName: fileName, transferred: transferred, total: fileSize, message: "正在发送 \(fileName)")
-            if last { break }
+        if position >= UInt64(fileSize) {
+            sendDataHeader(type: zeof, flags: positionBytes(UInt32(clamping: fileSize)))
+            armAckWatch()
+            return
         }
-        sendDataHeader(type: zeof, flags: positionBytes(UInt32(sendData.count)))
+
+        sendDataHeader(type: zdata, flags: positionBytes(UInt32(clamping: position)))
+        var budget = remoteBufferSize > 0 ? min(sendWindowSize, remoteBufferSize) : sendWindowSize
+        var reachedEOF = false
+        while budget > 0 {
+            let chunk = (try? handle.read(upToCount: min(sendSubpacketSize, budget))) ?? Data()
+            if chunk.isEmpty {
+                reachedEOF = true
+                break
+            }
+            budget -= chunk.count
+            sendOffset += UInt64(chunk.count)
+            transferred = Int64(sendOffset)
+            reachedEOF = sendOffset >= UInt64(fileSize)
+            sendSubframe([UInt8](chunk), end: reachedEOF ? zcrce : (budget <= 0 ? zcrcw : zcrcg))
+            publish(
+                direction: .send,
+                fileName: fileName,
+                transferred: transferred,
+                total: fileSize,
+                message: "正在发送 \(fileName)"
+            )
+            if reachedEOF { break }
+        }
+        if reachedEOF {
+            sendDataHeader(type: zeof, flags: positionBytes(UInt32(clamping: sendOffset)))
+        }
+        armAckWatch()
     }
 
     private func scheduleFinish(message: String, error: Bool, savedPath: String? = nil, delay: TimeInterval = 0.9) {
@@ -479,8 +562,11 @@ final class ZModemEngine {
         finishWork = nil
         offerWatch?.cancel()
         offerWatch = nil
+        ackWatch?.cancel()
+        ackWatch = nil
         try? fileHandle?.close()
         fileHandle = nil
+        closeSendHandle()
         let leftover = buffer
         buffer.removeAll()
         awaitingFileInfo = false
@@ -490,7 +576,10 @@ final class ZModemEngine {
         receiveCRC32 = false
         sendFiles = []
         sendIndex = 0
-        sendData = Data()
+        sendOffset = 0
+        // Both come from the peer's ZRINIT and must not leak into the next session.
+        remoteBufferSize = 0
+        escapeControls = false
         let direction: ZModemProgress.Direction = (mode == .offeringFile || mode == .transferring || mode == .pickingFiles || mode == .finishingSend)
             ? .send
             : .receive
