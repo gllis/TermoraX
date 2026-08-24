@@ -5,6 +5,7 @@
 //  通过 `ssh -s sftp` 走 SFTP 子系统，自己解析 packet，不依赖 libssh。
 //
 
+import Darwin
 import Foundation
 
 struct SFTPEntry: Identifiable, Hashable {
@@ -70,6 +71,12 @@ final class SFTPClient: @unchecked Sendable {
         if let secret {
             try? FileManager.default.removeItem(at: secret)
         }
+    }
+
+    var isAlive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !closed && process.isRunning
     }
 
     deinit {
@@ -231,17 +238,32 @@ final class SFTPClient: @unchecked Sendable {
         defer { try? closeHandle(handle) }
         let file = try FileHandle(forReadingFrom: local)
         defer { try? file.close() }
+
+        // 32 KiB stays under typical SSH channel payload limits. Several writes
+        // go out under one lock so the window actually pipelines.
+        let chunkSize = 32 * 1024
+        let window = 8
         var offset: UInt64 = 0
+        var inFlight: [Int] = []
+
+        lock.lock()
+        defer { lock.unlock() }
+
         while true {
-            let chunk = try file.read(upToCount: 32 * 1024) ?? Data()
-            if chunk.isEmpty { break }
-            var writer = ByteWriter()
-            writer.blob(handle)
-            writer.u64(offset)
-            writer.blob(chunk)
-            try expectOK(transact(type: 6, payload: writer.payload))
-            offset += UInt64(chunk.count)
-            onBytes(Int64(chunk.count))
+            while inFlight.count < window {
+                let chunk = try file.read(upToCount: chunkSize) ?? Data()
+                if chunk.isEmpty { break }
+                var writer = ByteWriter()
+                writer.blob(handle)
+                writer.u64(offset)
+                writer.blob(chunk)
+                try writePacket(type: 6, payload: writer.payload, includeID: true)
+                offset += UInt64(chunk.count)
+                inFlight.append(chunk.count)
+            }
+            if inFlight.isEmpty { break }
+            try expectOK(readPacket())
+            onBytes(Int64(inFlight.removeFirst()))
         }
     }
 
@@ -402,12 +424,39 @@ final class SFTPClient: @unchecked Sendable {
         var length = UInt32(body.count).bigEndian
         var packet = Data(bytes: &length, count: 4)
         packet.append(body)
-        try stdin.fileHandleForWriting.write(contentsOf: packet)
+        try writeAll(packet)
+    }
+
+    private func writeAll(_ data: Data) throws {
+        if closed || !process.isRunning {
+            throw SFTPError.processExited(process.terminationStatus)
+        }
+        let fd = stdin.fileHandleForWriting.fileDescriptor
+        try data.withUnsafeBytes { raw in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+            var sent = 0
+            while sent < raw.count {
+                let n = Darwin.write(fd, base + sent, raw.count - sent)
+                if n > 0 {
+                    sent += n
+                    continue
+                }
+                if n < 0 && errno == EINTR { continue }
+                if n < 0 && (errno == EPIPE || errno == ECONNRESET) {
+                    throw SFTPError.processExited(process.terminationStatus)
+                }
+                throw SFTPError.protocolFailure("SFTP 写入失败（errno \(errno)）")
+            }
+        }
     }
 
     private func readPacket() throws -> Packet {
         let lengthData = try readExact(4)
-        let length = lengthData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        let length = lengthData.withUnsafeBytes { raw -> UInt32 in
+            var value: UInt32 = 0
+            memcpy(&value, raw.baseAddress!, 4)
+            return UInt32(bigEndian: value)
+        }
         guard length > 0, length < 8 * 1024 * 1024 else {
             throw SFTPError.protocolFailure("SFTP 数据包异常")
         }
@@ -512,12 +561,20 @@ private struct ByteReader {
 
     mutating func u32() throws -> UInt32 {
         let slice = try take(4)
-        return slice.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        return slice.withUnsafeBytes { raw in
+            var value: UInt32 = 0
+            memcpy(&value, raw.baseAddress!, 4)
+            return UInt32(bigEndian: value)
+        }
     }
 
     mutating func u64() throws -> UInt64 {
         let slice = try take(8)
-        return slice.withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
+        return slice.withUnsafeBytes { raw in
+            var value: UInt64 = 0
+            memcpy(&value, raw.baseAddress!, 8)
+            return UInt64(bigEndian: value)
+        }
     }
 
     mutating func string() throws -> String {

@@ -68,6 +68,58 @@ final class SessionNode {
     var isSSH: Bool { !isGroup && sessionProtocol == "ssh" }
     var isLocal: Bool { !isGroup && sessionProtocol == "local" }
 
+    /// 在同一父级下复制一份。分组会连同子节点一起复制；密码按新 `id` 写入保险库。
+    func cloneInPlace() {
+        guard let context = modelContext else { return }
+        let siblings: [SessionNode]
+        if let parent {
+            siblings = parent.children
+        } else {
+            siblings = ((try? context.fetch(FetchDescriptor<SessionNode>())) ?? []).filter { $0.parent == nil }
+        }
+        for sibling in siblings where sibling.sortIndex > sortIndex {
+            sibling.sortIndex += 1
+        }
+        _ = cloneTree(
+            parent: parent,
+            sortIndex: sortIndex + 1,
+            name: Self.uniqueCopyName(from: name, among: siblings)
+        )
+        try? context.save()
+    }
+
+    private func cloneTree(parent: SessionNode?, sortIndex: Int, name: String) -> SessionNode {
+        let copy = SessionNode(name: name, isGroup: isGroup, parent: parent, sortIndex: sortIndex)
+        copy.sessionProtocol = sessionProtocol
+        copy.host = host
+        copy.port = port
+        copy.username = username
+        copy.authMethod = authMethod
+        copy.privateKeyPath = privateKeyPath
+        copy.sftpDefaultPath = sftpDefaultPath
+        copy.note = note
+        copy.isExpanded = isExpanded
+        modelContext?.insert(copy)
+        if let password = SecretStore.password(for: id), !password.isEmpty {
+            SecretStore.setPassword(password, for: copy.id)
+        }
+        if isGroup {
+            for (index, child) in sortedChildren.enumerated() {
+                _ = child.cloneTree(parent: copy, sortIndex: index, name: child.name)
+            }
+        }
+        return copy
+    }
+
+    private static func uniqueCopyName(from name: String, among siblings: [SessionNode]) -> String {
+        let existing = Set(siblings.map(\.name))
+        let base = "\(name) 副本"
+        if !existing.contains(base) { return base }
+        var n = 2
+        while existing.contains("\(name) 副本 \(n)") { n += 1 }
+        return "\(name) 副本 \(n)"
+    }
+
     /// 鼠标悬停时显示的连接信息；会话列表本身只渲染 `name`。
     var subtitle: String {
         if isGroup { return "" }

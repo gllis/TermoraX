@@ -15,6 +15,8 @@ import SwiftUI
 final class WorkspaceController {
     var tabs: [WorkspaceTab] = []
     var selectedTabID: UUID?
+    /// 会话树当前点选的节点，与是否已打开标签无关。
+    var selectedSessionID: UUID?
     var sessionSearch = ""
     var sessionPanelExpanded = false
     var filePanelExpanded = false
@@ -28,9 +30,68 @@ final class WorkspaceController {
 
     @ObservationIgnored private var didRestoreActivity = false
     @ObservationIgnored private var saveTimer: Timer?
+    private var collapsedGroupIDs: Set<UUID> = []
+    @ObservationIgnored private var didSeedCollapsedGroups = false
+    @ObservationIgnored private var expansionSaveWork: DispatchWorkItem?
+    @ObservationIgnored private var pendingExpansion: [UUID: Bool] = [:]
+    @ObservationIgnored private var pendingExpansionNodes: [UUID: SessionNode] = [:]
 
     var selectedTab: WorkspaceTab? {
         tabs.first(where: { $0.id == selectedTabID }) ?? tabs.last
+    }
+
+    var connectedSessionIDs: Set<UUID> {
+        Set(tabs.compactMap(\.sessionID))
+    }
+
+    func isGroupExpanded(_ node: SessionNode) -> Bool {
+        !collapsedGroupIDs.contains(node.id)
+    }
+
+    func seedCollapsedGroupsIfNeeded(from nodes: [SessionNode]) {
+        guard !didSeedCollapsedGroups else { return }
+        didSeedCollapsedGroups = true
+        collapsedGroupIDs = Set(nodes.filter { $0.isGroup && !$0.isExpanded }.map(\.id))
+    }
+
+    func toggleGroupExpanded(_ node: SessionNode) {
+        guard node.isGroup else { return }
+        var next = collapsedGroupIDs
+        if next.contains(node.id) {
+            next.remove(node.id)
+        } else {
+            next.insert(node.id)
+        }
+        collapsedGroupIDs = next
+        pendingExpansion[node.id] = !next.contains(node.id)
+        pendingExpansionNodes[node.id] = node
+        expansionSaveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.flushExpansion()
+        }
+        expansionSaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    private func flushExpansion() {
+        let writes = pendingExpansion
+        let nodes = pendingExpansionNodes
+        pendingExpansion.removeAll()
+        pendingExpansionNodes.removeAll()
+        for (id, expanded) in writes {
+            nodes[id]?.isExpanded = expanded
+        }
+    }
+
+    func selectSession(_ node: SessionNode) {
+        selectedSessionID = node.id
+    }
+
+    func selectTab(_ id: UUID) {
+        selectedTabID = id
+        if let sessionID = tabs.first(where: { $0.id == id })?.sessionID {
+            selectedSessionID = sessionID
+        }
     }
 
     func open(_ node: SessionNode, asSFTP: Bool = false) {
@@ -52,12 +113,14 @@ final class WorkspaceController {
             return
         }
         let tab = WorkspaceTab(kind: .terminal(sessionID: node.id), title: node.name)
+        selectedSessionID = node.id
         append(tab)
     }
 
     func openSFTP(_ node: SessionNode) {
         guard node.isSSH else { return }
         let tab = WorkspaceTab(kind: .sftp(sessionID: node.id), title: "SFTP · \(node.name)")
+        selectedSessionID = node.id
         append(tab)
     }
 
@@ -75,8 +138,10 @@ final class WorkspaceController {
             if let index, !tabs.isEmpty {
                 let next = tabs[min(index, tabs.count - 1)]
                 selectedTabID = next.id
+                selectedSessionID = next.sessionID ?? selectedSessionID
             } else {
                 selectedTabID = tabs.last?.id
+                selectedSessionID = tabs.last?.sessionID
             }
         }
         persistActivity()
@@ -154,6 +219,7 @@ final class WorkspaceController {
         } else {
             selectedTabID = restored.last?.id
         }
+        selectedSessionID = restored.first(where: { $0.id == selectedTabID })?.sessionID
         rescheduleActivitySave()
     }
 

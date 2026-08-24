@@ -38,7 +38,7 @@ struct TabBarView: View {
                 Menu {
                     ForEach(workspace.tabs) { tab in
                         Button {
-                            workspace.selectedTabID = tab.id
+                            workspace.selectTab(tab.id)
                         } label: {
                             HStack {
                                 Text(tab.title)
@@ -115,7 +115,7 @@ struct TabBarView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            workspace.selectedTabID = tab.id
+            workspace.selectTab(tab.id)
         }
         .contextMenu {
             Button("关闭") { workspace.close(tab.id) }

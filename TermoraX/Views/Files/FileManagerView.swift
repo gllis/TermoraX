@@ -119,52 +119,7 @@ struct FileManagerView: View {
             .buttonStyle(.borderless)
             .padding(8)
 
-            Table(entries, selection: selected) {
-                TableColumn("名称") { entry in
-                    Label(entry.name, systemImage: entry.systemImage)
-                        .lineLimit(1)
-                }
-                TableColumn("大小") { entry in
-                    Text(entry.sizeText)
-                        .foregroundStyle(.secondary)
-                }
-                .width(70)
-            }
-            .background {
-                TableDoubleClickMonitor { row in
-                    guard entries.indices.contains(row) else { return }
-                    let entry = entries[row]
-                    if isRemote {
-                        model.openRemote(entry)
-                    } else {
-                        model.openLocal(entry)
-                    }
-                }
-            }
-            .onKeyPress(.return) {
-                if isRemote {
-                    model.openRemoteSelection()
-                } else {
-                    model.openLocalSelection()
-                }
-                return .handled
-            }
-            .contextMenu {
-                Button("打开") {
-                    if isRemote {
-                        model.openRemoteSelection()
-                    } else {
-                        model.openLocalSelection()
-                    }
-                }
-                if isRemote {
-                    Button("下载") { model.downloadSelected() }
-                    Button("删除", role: .destructive) { model.deleteRemote() }
-                } else {
-                    Button("上传") { model.uploadSelected() }
-                    Button("在 Finder 中显示") { model.revealLocal() }
-                }
-            }
+            fileList(entries: entries, selected: selected, isRemote: isRemote)
         }
         .frame(minWidth: 0, maxWidth: .infinity)
         .overlay {
@@ -174,24 +129,127 @@ struct FileManagerView: View {
         }
     }
 
+    private func fileList(
+        entries: [FileEntry],
+        selected: Binding<FileEntry.ID?>,
+        isRemote: Bool
+    ) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(entries) { entry in
+                    fileRow(entry, selected: selected, isRemote: isRemote)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+        .onKeyPress(.return) {
+            if isRemote {
+                model.openRemoteSelection()
+            } else {
+                model.openLocalSelection()
+            }
+            return .handled
+        }
+    }
+
+    private func fileRow(
+        _ entry: FileEntry,
+        selected: Binding<FileEntry.ID?>,
+        isRemote: Bool
+    ) -> some View {
+        let isSelected = selected.wrappedValue == entry.id
+        return HStack(spacing: 8) {
+            Image(systemName: entry.systemImage)
+                .foregroundStyle(entry.isDirectory ? Color.accentColor : Color.secondary)
+                .frame(width: 14)
+            Text(entry.name)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(entry.sizeText)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+                .frame(width: 70, alignment: .trailing)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+        }
+        .contentShape(Rectangle())
+        .highPriorityGesture(
+            TapGesture(count: 2).onEnded {
+                selected.wrappedValue = entry.id
+                if isRemote {
+                    model.openRemote(entry)
+                } else {
+                    model.openLocal(entry)
+                }
+            }
+        )
+        .onTapGesture {
+            selected.wrappedValue = entry.id
+        }
+        .contextMenu {
+            Button("打开") {
+                selected.wrappedValue = entry.id
+                if isRemote {
+                    model.openRemote(entry)
+                } else {
+                    model.openLocal(entry)
+                }
+            }
+            if isRemote {
+                Button("下载") {
+                    selected.wrappedValue = entry.id
+                    model.downloadSelected()
+                }
+                Button("删除", role: .destructive) {
+                    selected.wrappedValue = entry.id
+                    model.deleteRemote()
+                }
+            } else {
+                Button("上传") {
+                    selected.wrappedValue = entry.id
+                    model.uploadSelected()
+                }
+                Button("在 Finder 中显示") {
+                    selected.wrappedValue = entry.id
+                    model.revealLocal()
+                }
+            }
+        }
+    }
+
     private var transferList: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("传输")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             ForEach(transfers.jobs.prefix(4)) { job in
-                HStack {
-                    Image(systemName: job.kind == .download ? "arrow.down.circle" : "arrow.up.circle")
-                    Text(job.name)
-                        .lineLimit(1)
-                    Spacer()
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Image(systemName: job.kind == .download ? "arrow.down.circle" : "arrow.up.circle")
+                        Text(job.name)
+                            .lineLimit(1)
+                        Spacer()
+                        if job.status == .running {
+                            if !job.speedText.isEmpty {
+                                Text(job.speedText)
+                                    .monospacedDigit()
+                            }
+                            Text(job.percentText)
+                                .monospacedDigit()
+                                .frame(minWidth: 36, alignment: .trailing)
+                        } else {
+                            Text(job.message)
+                                .foregroundStyle(job.status == .failed ? .red : .secondary)
+                        }
+                    }
                     if job.status == .running {
                         ProgressView(value: job.progress)
-                            .frame(width: 80)
-                    } else {
-                        Text(job.message)
-                            .font(.caption)
-                            .foregroundStyle(job.status == .failed ? .red : .secondary)
                     }
                 }
                 .font(.caption)
@@ -258,6 +316,9 @@ final class FileBrowserModel {
 
     func connect(_ node: SessionNode) {
         let target = SSHCommand.target(from: node)
+        if self.target?.id == target.id, (client?.isAlive == true || isConnecting) {
+            return
+        }
         self.target = target
         errorMessage = nil
         isConnecting = true
@@ -445,18 +506,35 @@ final class FileBrowserModel {
         var job = TransferJob(id: id, name: name, kind: kind, transferred: 0, total: 0, status: .running, message: "进行中")
         transfers?.upsert(job)
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            var lastTick = Date()
+            var lastBytes: Int64 = 0
+            var speed: Double = 0
             do {
                 try work(id) { transferred, total in
-                    DispatchQueue.main.async {
-                        job.transferred = transferred
-                        job.total = total
-                        self?.transfers?.upsert(job)
+                    let now = Date()
+                    let elapsed = now.timeIntervalSince(lastTick)
+                    if elapsed >= 0.2 || transferred == total {
+                        if elapsed > 0 {
+                            let instant = Double(transferred - lastBytes) / elapsed
+                            speed = speed == 0 ? instant : speed * 0.65 + instant * 0.35
+                        }
+                        lastTick = now
+                        lastBytes = transferred
+                        DispatchQueue.main.async {
+                            job.transferred = transferred
+                            job.total = total
+                            job.bytesPerSecond = speed
+                            let percent = total > 0 ? Int((Double(transferred) / Double(total) * 100).rounded()) : 0
+                            job.message = total > 0 ? "\(percent)%" : "进行中"
+                            self?.transfers?.upsert(job)
+                        }
                     }
                 }
                 DispatchQueue.main.async {
                     job.status = .finished
                     job.message = "完成"
                     job.transferred = max(job.transferred, job.total)
+                    job.bytesPerSecond = 0
                     self?.transfers?.upsert(job)
                 }
             } catch {
@@ -478,79 +556,5 @@ final class FileBrowserModel {
             size: item.size,
             systemImage: item.systemImage
         )
-    }
-}
-
-/// SwiftUI `Table` 会吃掉 `onTapGesture`，改挂底层 `NSTableView` 的双击。
-private struct TableDoubleClickMonitor: NSViewRepresentable {
-    var action: (Int) -> Void
-
-    func makeNSView(context: Context) -> MonitorView {
-        let view = MonitorView()
-        view.action = action
-        return view
-    }
-
-    func updateNSView(_ view: MonitorView, context: Context) {
-        view.action = action
-    }
-
-    final class MonitorView: NSView {
-        var action: ((Int) -> Void)?
-        private var monitor: Any?
-
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            if window == nil {
-                removeMonitor()
-            } else {
-                installMonitor()
-            }
-        }
-
-        deinit {
-            removeMonitor()
-        }
-
-        private func installMonitor() {
-            guard monitor == nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
-                guard let self, event.clickCount == 2, event.window === self.window else {
-                    return event
-                }
-                guard let table = self.ownedTable() else { return event }
-                let point = table.convert(event.locationInWindow, from: nil)
-                let row = table.row(at: point)
-                if row >= 0 {
-                    DispatchQueue.main.async { self.action?(row) }
-                }
-                return event
-            }
-        }
-
-        private func removeMonitor() {
-            if let monitor {
-                NSEvent.removeMonitor(monitor)
-                self.monitor = nil
-            }
-        }
-
-        private func ownedTable() -> NSTableView? {
-            var current: NSView? = self
-            while let view = current {
-                let tables = Self.tables(in: view)
-                if tables.count == 1 { return tables[0] }
-                if tables.count > 1 { return nil }
-                current = view.superview
-            }
-            return nil
-        }
-
-        private static func tables(in view: NSView) -> [NSTableView] {
-            if let table = view as? NSTableView { return [table] }
-            return view.subviews.flatMap { tables(in: $0) }
-        }
     }
 }

@@ -101,7 +101,11 @@ enum SSHCommand {
     }
 
     static func sftpArguments(for target: SSHTarget) -> [String] {
-        baseOptions(for: target) + ["\(user(username: target.username))@\(target.host)", "-s", "sftp"]
+        baseOptions(for: target) + [
+            "-e", "none",
+            "\(user(username: target.username))@\(target.host)",
+            "-s", "sftp",
+        ]
     }
 
     static func processEnvironment(extra: [String: String] = [:]) -> [String] {

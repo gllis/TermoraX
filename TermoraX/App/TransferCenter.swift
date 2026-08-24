@@ -17,12 +17,26 @@ struct TransferJob: Identifiable, Hashable {
     var kind: Kind
     var transferred: Int64
     var total: Int64
+    var bytesPerSecond: Double = 0
     var status: Status
     var message: String
 
     var progress: Double {
         guard total > 0 else { return status == .finished ? 1 : 0 }
         return min(1, Double(transferred) / Double(total))
+    }
+
+    var percentText: String {
+        guard total > 0 else { return status == .running ? "…" : "" }
+        return "\(Int((progress * 100).rounded()))%"
+    }
+
+    var speedText: String {
+        guard status == .running, bytesPerSecond > 0 else { return "" }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        return formatter.string(fromByteCount: Int64(bytesPerSecond.rounded())) + "/s"
     }
 }
 

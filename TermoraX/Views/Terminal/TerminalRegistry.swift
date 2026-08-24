@@ -263,6 +263,10 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // AppKit sends this to every view in the window. Only handle Cmd-C/V/A
+        // when the terminal actually has focus, otherwise path fields and other
+        // text views cannot paste.
+        guard isInResponderChain(window?.firstResponder) else { return false }
         let command = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command)
         guard command, !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.option) else {
             return super.performKeyEquivalent(with: event)
@@ -280,6 +284,15 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
         default:
             return super.performKeyEquivalent(with: event)
         }
+    }
+
+    private func isInResponderChain(_ responder: NSResponder?) -> Bool {
+        var current = responder
+        while let node = current {
+            if node === self { return true }
+            current = node.nextResponder
+        }
+        return false
     }
 
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
@@ -457,6 +470,13 @@ final class TerminalHostView: NSView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        terminal.performKeyEquivalent(with: event)
+        var current = window?.firstResponder
+        while let node = current {
+            if node === self || node === terminal {
+                return terminal.performKeyEquivalent(with: event)
+            }
+            current = node.nextResponder
+        }
+        return false
     }
 }
