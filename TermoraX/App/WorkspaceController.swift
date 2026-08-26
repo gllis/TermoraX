@@ -33,8 +33,9 @@ final class WorkspaceController {
     private var collapsedGroupIDs: Set<UUID> = []
     @ObservationIgnored private var didSeedCollapsedGroups = false
     @ObservationIgnored private var expansionSaveWork: DispatchWorkItem?
-    @ObservationIgnored private var pendingExpansion: [UUID: Bool] = [:]
-    @ObservationIgnored private var pendingExpansionNodes: [UUID: SessionNode] = [:]
+    @ObservationIgnored private var treeRoots: [SessionNode] = []
+    @ObservationIgnored private var treeChildren: [UUID: [SessionNode]] = [:]
+    @ObservationIgnored private var treeSignature: [String] = []
 
     var selectedTab: WorkspaceTab? {
         tabs.first(where: { $0.id == selectedTabID }) ?? tabs.last
@@ -44,6 +45,8 @@ final class WorkspaceController {
         Set(tabs.compactMap(\.sessionID))
     }
 
+    var sessionCollapseToken: Set<UUID> { collapsedGroupIDs }
+
     func isGroupExpanded(_ node: SessionNode) -> Bool {
         !collapsedGroupIDs.contains(node.id)
     }
@@ -51,7 +54,44 @@ final class WorkspaceController {
     func seedCollapsedGroupsIfNeeded(from nodes: [SessionNode]) {
         guard !didSeedCollapsedGroups else { return }
         didSeedCollapsedGroups = true
-        collapsedGroupIDs = Set(nodes.filter { $0.isGroup && !$0.isExpanded }.map(\.id))
+        if let stored = UserDefaults.standard.array(forKey: Self.collapsedGroupsKey) as? [String] {
+            collapsedGroupIDs = Set(stored.compactMap(UUID.init(uuidString:)))
+        } else {
+            collapsedGroupIDs = Set(nodes.filter { $0.isGroup && !$0.isExpanded }.map(\.id))
+            Self.persistCollapsedGroups(collapsedGroupIDs)
+        }
+        syncSessionTree(nodes)
+    }
+
+    /// Rebuilds the adjacency list only when node identity / order changes.
+    /// Collapse toggles must not walk SwiftData relationships.
+    func syncSessionTree(_ nodes: [SessionNode]) {
+        let signature = nodes.map { "\($0.id.uuidString):\($0.sortIndex)" }
+        guard signature != treeSignature else { return }
+        treeSignature = signature
+        var roots: [SessionNode] = []
+        var children: [UUID: [SessionNode]] = [:]
+        roots.reserveCapacity(nodes.count)
+        children.reserveCapacity(nodes.count)
+        for node in nodes {
+            if node.parent == nil {
+                roots.append(node)
+            }
+            if node.isGroup {
+                children[node.id] = node.sortedChildren
+            }
+        }
+        roots.sort(by: Self.compareSessions)
+        treeRoots = roots
+        treeChildren = children
+    }
+
+    func rootSessions() -> [SessionNode] {
+        treeRoots
+    }
+
+    func childSessions(of id: UUID) -> [SessionNode] {
+        treeChildren[id] ?? []
     }
 
     func toggleGroupExpanded(_ node: SessionNode) {
@@ -63,24 +103,27 @@ final class WorkspaceController {
             next.insert(node.id)
         }
         collapsedGroupIDs = next
-        pendingExpansion[node.id] = !next.contains(node.id)
-        pendingExpansionNodes[node.id] = node
-        expansionSaveWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.flushExpansion()
-        }
-        expansionSaveWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        scheduleCollapsedGroupsPersist(next)
     }
 
-    private func flushExpansion() {
-        let writes = pendingExpansion
-        let nodes = pendingExpansionNodes
-        pendingExpansion.removeAll()
-        pendingExpansionNodes.removeAll()
-        for (id, expanded) in writes {
-            nodes[id]?.isExpanded = expanded
+    private func scheduleCollapsedGroupsPersist(_ ids: Set<UUID>) {
+        expansionSaveWork?.cancel()
+        let work = DispatchWorkItem {
+            Self.persistCollapsedGroups(ids)
         }
+        expansionSaveWork = work
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    private static func persistCollapsedGroups(_ ids: Set<UUID>) {
+        UserDefaults.standard.set(ids.map(\.uuidString), forKey: collapsedGroupsKey)
+    }
+
+    private static let collapsedGroupsKey = "session.collapsedGroupIDs"
+
+    private static func compareSessions(_ lhs: SessionNode, _ rhs: SessionNode) -> Bool {
+        if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
+        return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
     }
 
     func selectSession(_ node: SessionNode) {

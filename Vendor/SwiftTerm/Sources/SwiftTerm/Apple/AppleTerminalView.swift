@@ -2561,7 +2561,13 @@ extension TerminalView {
     {
         let arr = [UInt8](ch.utf8)
         if arr.count == 1 {
-            let ch = Character (UnicodeScalar (arr [0]))
+            let raw = arr[0]
+            // Control+C often arrives as U+0003, not "c". Passing that through
+            // is required; mapping only a-z/A-Z used to send nothing.
+            if raw < 0x20 {
+                return [raw]
+            }
+            let ch = Character (UnicodeScalar (raw))
             var value: UInt8
             switch ch {
             case "A"..."Z":
@@ -2584,6 +2590,9 @@ extension TerminalView {
                 return []
             }
             return [value]
+        }
+        if let scalar = ch.unicodeScalars.first, scalar.value < 0x20 {
+            return [UInt8(scalar.value)]
         }
         return []
     }

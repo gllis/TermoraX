@@ -2,7 +2,7 @@
 //  SessionManagerView.swift
 //  TermoraX
 //
-//  左侧会话树。扁平 LazyVStack，折叠状态先改内存再延迟写入 SwiftData，避免整树卡顿。
+//  左侧会话树。扁平 LazyVStack；折叠只改内存，持久化放到后台 UserDefaults。
 //
 
 import SwiftData
@@ -28,21 +28,36 @@ struct SessionManagerView: View {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     if workspace.sessionSearch.isEmpty {
                         ForEach(visibleRows) { row in
-                            SessionRowView(node: row.node, depth: row.depth, workspace: workspace)
+                            SessionRowView(
+                                node: row.node,
+                                depth: row.depth,
+                                isSelected: workspace.selectedSessionID == row.node.id,
+                                isConnected: connectedIDs.contains(row.node.id),
+                                isExpanded: workspace.isGroupExpanded(row.node),
+                                workspace: workspace
+                            )
+                            .transition(.opacity)
                         }
                     } else if filtered.isEmpty {
                         ContentUnavailableView("没有匹配的会话", systemImage: "magnifyingglass")
                             .frame(maxWidth: .infinity, minHeight: 160)
                     } else {
                         ForEach(filtered, id: \.id) { node in
-                            SessionRowView(node: node, depth: 0, workspace: workspace)
+                            SessionRowView(
+                                node: node,
+                                depth: 0,
+                                isSelected: workspace.selectedSessionID == node.id,
+                                isConnected: connectedIDs.contains(node.id),
+                                isExpanded: workspace.isGroupExpanded(node),
+                                workspace: workspace
+                            )
                         }
                     }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .transaction { $0.animation = nil }
+                .animation(.easeInOut(duration: 0.16), value: workspace.sessionCollapseToken)
             }
             .contextMenu {
                 Button("新建分组") { workspace.pendingEdit = .newGroup(parent: nil) }
@@ -67,6 +82,10 @@ struct SessionManagerView: View {
         }
         .onAppear {
             workspace.seedCollapsedGroupsIfNeeded(from: nodes)
+            workspace.syncSessionTree(nodes)
+        }
+        .onChange(of: nodes.map(\.id)) { _, _ in
+            workspace.syncSessionTree(nodes)
         }
         .onChange(of: workspace.selectedTabID) { _, _ in
             if let sessionID = workspace.selectedTab?.sessionID {
@@ -75,11 +94,7 @@ struct SessionManagerView: View {
         }
     }
 
-    private var roots: [SessionNode] {
-        nodes
-            .filter { $0.parent == nil }
-            .sorted(by: Self.compare)
-    }
+    private var connectedIDs: Set<UUID> { workspace.connectedSessionIDs }
 
     private var filtered: [SessionNode] {
         let keyword = workspace.sessionSearch.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,23 +109,20 @@ struct SessionManagerView: View {
     }
 
     private var visibleRows: [SessionRowItem] {
+        workspace.seedCollapsedGroupsIfNeeded(from: nodes)
+        workspace.syncSessionTree(nodes)
         var rows: [SessionRowItem] = []
         func append(_ node: SessionNode, depth: Int) {
             rows.append(SessionRowItem(node: node, depth: depth))
             guard node.isGroup, workspace.isGroupExpanded(node) else { return }
-            for child in node.sortedChildren {
+            for child in workspace.childSessions(of: node.id) {
                 append(child, depth: depth + 1)
             }
         }
-        for root in roots {
+        for root in workspace.rootSessions() {
             append(root, depth: 0)
         }
         return rows
-    }
-
-    private static func compare(_ lhs: SessionNode, _ rhs: SessionNode) -> Bool {
-        if lhs.sortIndex != rhs.sortIndex { return lhs.sortIndex < rhs.sortIndex }
-        return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
     }
 }
 
@@ -123,11 +135,10 @@ private struct SessionRowItem: Identifiable {
 private struct SessionRowView: View {
     let node: SessionNode
     var depth: Int
-    @Bindable var workspace: WorkspaceController
-
-    private var isSelected: Bool { workspace.selectedSessionID == node.id }
-    private var isConnected: Bool { !node.isGroup && workspace.connectedSessionIDs.contains(node.id) }
-    private var isExpanded: Bool { workspace.isGroupExpanded(node) }
+    var isSelected: Bool
+    var isConnected: Bool
+    var isExpanded: Bool
+    let workspace: WorkspaceController
     private var accent: Color { .accentColor }
     private var iconName: String {
         if node.isGroup { return "folder.fill" }
@@ -154,6 +165,7 @@ private struct SessionRowView: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .animation(.easeInOut(duration: 0.16), value: isExpanded)
                         .frame(width: 12, height: 12)
                 }
                 .buttonStyle(.plain)

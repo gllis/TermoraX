@@ -9,6 +9,7 @@
 #if !os(iOS) && !os(Windows)
 import Foundation
 import Dispatch
+import Darwin
 #if false //canImport(Subprocess)
 import Subprocess
 import System
@@ -199,6 +200,18 @@ public class LocalProcess {
                 delegate?.dataReceived(slice: chunk[...])
             }
 
+            pendingLock.lock()
+            let remaining = pendingBytes
+            pendingLock.unlock()
+            // Yield during a flood so Ctrl+C can be handled instead of
+            // waiting for megabytes of `tail -f` to finish rendering.
+            if remaining > 256 * 1024 {
+                dispatchQueue.async { [weak self] in
+                    self?.drainReceivedData()
+                }
+                return
+            }
+
             if DispatchTime.now().uptimeNanoseconds - start >= pendingTimeSliceNs {
                 dispatchQueue.async { [weak self] in
                     self?.drainReceivedData()
@@ -207,7 +220,50 @@ public class LocalProcess {
             }
         }
     }
-    
+
+    /// Writes a control byte straight to the pty and drops output that was read
+    /// but not rendered yet. Output produced after this call is kept, otherwise a
+    /// successful interrupt looks ignored and the user keeps pressing Ctrl+C.
+    public func sendControlAndDropOutput(_ byte: UInt8) {
+        guard running, childfd >= 0 else { return }
+        pendingLock.lock()
+        pendingChunks.removeAll(keepingCapacity: true)
+        pendingChunkIndex = 0
+        pendingBytes = 0
+        let wasSuspended = readSuspendedForBackpressure
+        readSuspendedForBackpressure = false
+        pendingLock.unlock()
+        if wasSuspended {
+            resumePtyRead()
+        }
+        writeNow([byte])
+    }
+
+    /// Ordered, synchronous pty write. DispatchIO owns `childfd` for reading and
+    /// sets it non-blocking, so retry on EAGAIN instead of dropping the byte.
+    func writeNow(_ bytes: [UInt8]) {
+        guard childfd >= 0 else { return }
+        bytes.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            var spins = 0
+            while offset < buffer.count {
+                let written = Darwin.write(childfd, base + offset, buffer.count - offset)
+                if written > 0 {
+                    offset += written
+                    continue
+                }
+                if errno == EAGAIN || errno == EINTR {
+                    spins += 1
+                    if spins > 200 { return }
+                    usleep(500)
+                    continue
+                }
+                return
+            }
+        }
+    }
+
     /**
      * Sends the array slice to the local process using DispatchIO
      * - Parameter data: The range of bytes to send to the child process

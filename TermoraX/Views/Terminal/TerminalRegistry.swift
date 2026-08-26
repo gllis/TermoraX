@@ -190,8 +190,7 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
     }
 
     func sendText(_ text: String) {
-        let bytes = Array(text.utf8)
-        process.send(data: bytes[...])
+        writeToPty(Array(text.utf8)[...])
     }
 
     func terminate() {
@@ -393,13 +392,48 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        if zmodem.isActive {
-            if data.contains(0x03) {
+        if let interrupt = interruptByte(in: data) {
+            if zmodem.isActive {
                 zmodem.cancel()
             }
+            process.sendControlAndDropOutput(interrupt)
             return
         }
-        process.send(data: data)
+        if zmodem.isActive {
+            return
+        }
+        writeToPty(data)
+    }
+
+    /// Only a lone control byte counts. Scanning pasted text would turn a stray
+    /// 0x03 into an interrupt.
+    private func interruptByte(in data: ArraySlice<UInt8>) -> UInt8? {
+        guard data.count == 1, let byte = data.first else { return nil }
+        switch byte {
+        case 0x03, 0x1a, 0x1c: return byte
+        default: return nil
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if !hasMarkedText(), deliverInterruptKey(event) { return }
+        super.keyDown(with: event)
+    }
+
+    /// Only SIGINT / SIGTSTP / SIGQUIT. Other Ctrl+letter keys must reach the IME.
+    @discardableResult
+    private func deliverInterruptKey(_ event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard mods.contains(.control), !mods.contains(.command) else { return false }
+        let byte: UInt8
+        switch event.keyCode {
+        case 0x08: byte = 0x03 // C
+        case 0x06: byte = 0x1A // Z
+        case 0x2A: byte = 0x1C // \
+        default: return false
+        }
+        send(source: self, data: [byte][...])
+        return true
     }
 
     func scrolled(source: TerminalView, position: Double) {}
