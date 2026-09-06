@@ -22,6 +22,7 @@ struct SessionEditorView: View {
     @State private var authMethod = "default"
     @State private var password = ""
     @State private var privateKeyPath = ""
+    @State private var keyPassphrase = ""
     @State private var sftpDefaultPath = ""
     @State private var note = ""
 
@@ -43,13 +44,15 @@ struct SessionEditorView: View {
                             Text("密码").tag("password")
                             Text("私钥文件").tag("key")
                         }
-                        .help("要自动登录，请选择「密码」并保存。已打开的标签页需要关掉后重新连接。")
+                        .help("密码或加密私钥的口令会写入本机保险库。已打开的标签页需要关掉后重新连接。")
                         if authMethod == "password" {
                             SecureField("密码", text: $password)
                         }
                         if authMethod == "key" {
                             TextField("私钥路径", text: $privateKeyPath)
                                 .help("例如 ~/.ssh/id_ed25519")
+                            SecureField("私钥密码（可选）", text: $keyPassphrase)
+                                .help("密钥未加密可留空；加密私钥请填写口令，连接时自动解锁。")
                         }
                         TextField("SFTP 默认目录", text: $sftpDefaultPath)
                     }
@@ -99,7 +102,12 @@ struct SessionEditorView: View {
             privateKeyPath = node.privateKeyPath
             sftpDefaultPath = node.sftpDefaultPath
             note = node.note
-            password = SecretStore.password(for: node.id) ?? ""
+            let stored = SecretStore.password(for: node.id) ?? ""
+            if node.authMethod == "key" {
+                keyPassphrase = stored
+            } else {
+                password = stored
+            }
         }
     }
 
@@ -128,6 +136,8 @@ struct SessionEditorView: View {
             node.note = note
             if authMethod == "password" {
                 SecretStore.setPassword(password, for: node.id)
+            } else if authMethod == "key" {
+                SecretStore.setPassword(keyPassphrase, for: node.id)
             } else {
                 SecretStore.deletePassword(for: node.id)
             }

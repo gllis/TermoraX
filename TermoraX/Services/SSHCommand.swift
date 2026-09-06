@@ -64,6 +64,11 @@ enum SSHCommand {
             if !key.isEmpty {
                 args += ["-i", key, "-o", "IdentitiesOnly=yes"]
             }
+            args += [
+                "-o", "PreferredAuthentications=publickey",
+                "-o", "PasswordAuthentication=no",
+                "-o", "KbdInteractiveAuthentication=no",
+            ]
         }
         if target.authMethod == "password" {
             args += [
@@ -143,10 +148,9 @@ enum SSHCommand {
         ], secret)
     }
 
-    /// 启动交互式 SSH：参数 + 环境变量（含密码登录时的 ASKPASS 临时文件）。
+    /// 启动交互式 SSH：参数 + 环境变量（密码登录或加密私钥口令走 ASKPASS）。
     static func terminalLaunch(for session: SessionNode) -> (args: [String], env: [String], secret: URL?) {
-        let stored = session.authMethod == "key" ? nil : SecretStore.password(for: session.id)
-        let ask = askpassEnvironment(password: stored)
+        let ask = askpassEnvironment(password: SecretStore.password(for: session.id))
         return (terminalArguments(for: session), processEnvironment(extra: ask.env), ask.secret)
     }
 }

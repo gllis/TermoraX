@@ -12,11 +12,21 @@ struct FileManagerView: View {
     let session: SessionNode?
     let transfers: TransferCenter
     var embeddedInTab: Bool = false
+    var tabID: UUID? = nil
+    var reconnectNonce: Int = 0
 
-    @State private var model = FileBrowserModel()
+    @State private var sidebarModel = FileBrowserModel()
+
+    private var browser: FileBrowserModel {
+        if let tabID {
+            return FileBrowserRegistry.shared.model(for: tabID)
+        }
+        return sidebarModel
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
+        @Bindable var model = browser
+        return VStack(spacing: 0) {
             if !embeddedInTab {
                 EmptyView()
             }
@@ -63,6 +73,11 @@ struct FileManagerView: View {
                 model.connect(session)
             }
         }
+        .onChange(of: reconnectNonce) { _, _ in
+            if let session, session.isSSH {
+                model.forceReconnect(session)
+            }
+        }
     }
 
     private func pane(
@@ -82,34 +97,34 @@ struct FileManagerView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(minWidth: 0)
                     .onSubmit {
-                        if isRemote { model.refreshRemote() } else { model.loadLocal() }
+                        if isRemote { browser.refreshRemote() } else { browser.loadLocal() }
                     }
                 Button {
-                    if isRemote { model.goUpRemote() } else { model.goUpLocal() }
+                    if isRemote { browser.goUpRemote() } else { browser.goUpLocal() }
                 } label: {
                     Image(systemName: "arrow.up")
                 }
                 .help("上级目录")
                 Button {
-                    if isRemote { model.refreshRemote() } else { model.loadLocal() }
+                    if isRemote { browser.refreshRemote() } else { browser.loadLocal() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 if isRemote {
                     Button {
-                        model.uploadSelected()
+                        browser.uploadSelected()
                     } label: {
                         Image(systemName: "arrow.up.to.line")
                     }
                     .help("上传选中的本机文件或文件夹")
                     Button {
-                        model.downloadSelected()
+                        browser.downloadSelected()
                     } label: {
                         Image(systemName: "arrow.down.to.line")
                     }
                     .help("下载选中的远程文件或文件夹")
                     Button {
-                        model.mkdirRemote()
+                        browser.mkdirRemote()
                     } label: {
                         Image(systemName: "folder.badge.plus")
                     }
@@ -123,7 +138,7 @@ struct FileManagerView: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity)
         .overlay {
-            if isRemote && model.isConnecting {
+            if isRemote && browser.isConnecting {
                 ProgressView("正在连接 SFTP…")
             }
         }
@@ -145,9 +160,9 @@ struct FileManagerView: View {
         .background(Color(nsColor: .textBackgroundColor))
         .onKeyPress(.return) {
             if isRemote {
-                model.openRemoteSelection()
+                browser.openRemoteSelection()
             } else {
-                model.openLocalSelection()
+                browser.openLocalSelection()
             }
             return .handled
         }
@@ -169,7 +184,13 @@ struct FileManagerView: View {
             Text(entry.sizeText)
                 .foregroundStyle(.secondary)
                 .font(.caption)
+                .monospacedDigit()
                 .frame(width: 70, alignment: .trailing)
+            Text(entry.dateText)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+                .monospacedDigit()
+                .frame(width: 148, alignment: .trailing)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -183,9 +204,9 @@ struct FileManagerView: View {
             TapGesture(count: 2).onEnded {
                 selected.wrappedValue = entry.id
                 if isRemote {
-                    model.openRemote(entry)
+                    browser.openRemote(entry)
                 } else {
-                    model.openLocal(entry)
+                    browser.openLocal(entry)
                 }
             }
         )
@@ -196,28 +217,28 @@ struct FileManagerView: View {
             Button("打开") {
                 selected.wrappedValue = entry.id
                 if isRemote {
-                    model.openRemote(entry)
+                    browser.openRemote(entry)
                 } else {
-                    model.openLocal(entry)
+                    browser.openLocal(entry)
                 }
             }
             if isRemote {
                 Button("下载") {
                     selected.wrappedValue = entry.id
-                    model.downloadSelected()
+                    browser.downloadSelected()
                 }
                 Button("删除", role: .destructive) {
                     selected.wrappedValue = entry.id
-                    model.deleteRemote()
+                    browser.deleteRemote()
                 }
             } else {
                 Button("上传") {
                     selected.wrappedValue = entry.id
-                    model.uploadSelected()
+                    browser.uploadSelected()
                 }
                 Button("在 Finder 中显示") {
                     selected.wrappedValue = entry.id
-                    model.revealLocal()
+                    browser.revealLocal()
                 }
             }
         }
@@ -225,35 +246,58 @@ struct FileManagerView: View {
 
     private var transferList: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("传输")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            ForEach(transfers.jobs.prefix(4)) { job in
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Image(systemName: job.kind == .download ? "arrow.down.circle" : "arrow.up.circle")
-                        Text(job.name)
-                            .lineLimit(1)
-                        Spacer()
-                        if job.status == .running {
-                            if !job.speedText.isEmpty {
-                                Text(job.speedText)
-                                    .monospacedDigit()
-                            }
-                            Text(job.percentText)
-                                .monospacedDigit()
-                                .frame(minWidth: 36, alignment: .trailing)
-                        } else {
-                            Text(job.message)
-                                .foregroundStyle(job.status == .failed ? .red : .secondary)
-                        }
+            HStack {
+                Text("传输")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if transfers.jobs.contains(where: { $0.status != .running }) {
+                    Button("清空记录") {
+                        transfers.clearHistory()
                     }
-                    if job.status == .running {
-                        ProgressView(value: job.progress)
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .help("清除已完成、失败和已取消的记录")
+                }
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(transfers.jobs.prefix(8)) { job in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Image(systemName: job.kind == .download ? "arrow.down.circle" : "arrow.up.circle")
+                                Text(job.name)
+                                    .lineLimit(1)
+                                Spacer()
+                                if job.status == .running {
+                                    if !job.speedText.isEmpty {
+                                        Text(job.speedText)
+                                            .monospacedDigit()
+                                    }
+                                    Text(job.percentText)
+                                        .monospacedDigit()
+                                        .frame(minWidth: 36, alignment: .trailing)
+                                    Button {
+                                        transfers.cancel(job.id)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("取消")
+                                } else {
+                                    Text(job.message)
+                                        .foregroundStyle(job.status == .failed ? .red : .secondary)
+                                }
+                            }
+                            if job.status == .running {
+                                ProgressView(value: job.progress)
+                            }
+                        }
+                        .font(.caption)
                     }
                 }
-                .font(.caption)
             }
+            .frame(maxHeight: 132)
         }
         .padding(8)
     }
@@ -266,13 +310,28 @@ struct FileEntry: Identifiable, Hashable {
     var isDirectory: Bool
     var isSymlink: Bool = false
     var size: UInt64
+    var modified: Date? = nil
     var systemImage: String
+
     var sizeText: String {
         if isDirectory { return "—" }
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: Int64(size))
     }
+
+    var dateText: String {
+        guard let modified else { return "—" }
+        return Self.dateFormatter.string(from: modified)
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.timeZone = .current
+        return formatter
+    }()
 }
 
 @Observable
@@ -289,13 +348,23 @@ final class FileBrowserModel {
 
     private var client: SFTPClient?
     private var target: SSHTarget?
+    private var connectGeneration = 0
+    private var didResolveRemote = false
+
+    func shutdown() {
+        connectGeneration += 1
+        client?.close()
+        client = nil
+        isConnecting = false
+    }
 
     func loadLocal() {
         let url = URL(fileURLWithPath: AppPaths.expandHome(localPath))
         localPath = url.path
-        let items = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey], options: [.skipsHiddenFiles])) ?? []
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey]
+        let items = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])) ?? []
         localEntries = items.map { item in
-            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .isSymbolicLinkKey])
+            let values = try? item.resourceValues(forKeys: keys)
             let isDir = values?.isDirectory ?? false
             let isLink = values?.isSymbolicLink ?? false
             let size = UInt64(values?.fileSize ?? 0)
@@ -305,6 +374,7 @@ final class FileBrowserModel {
                 isDirectory: isDir,
                 isSymlink: isLink,
                 size: size,
+                modified: values?.contentModificationDate,
                 systemImage: isDir ? "folder.fill" : (isLink ? "link" : "doc")
             )
         }
@@ -319,26 +389,51 @@ final class FileBrowserModel {
         if self.target?.id == target.id, (client?.isAlive == true || isConnecting) {
             return
         }
+        startConnect(target: target)
+    }
+
+    func forceReconnect(_ node: SessionNode) {
+        client?.close()
+        client = nil
+        isConnecting = false
+        target = nil
+        startConnect(target: SSHCommand.target(from: node))
+    }
+
+    private func startConnect(target: SSHTarget) {
         self.target = target
         errorMessage = nil
         isConnecting = true
-        let defaultPath = target.sftpDefaultPath.isEmpty ? "." : target.sftpDefaultPath
+        connectGeneration += 1
+        let generation = connectGeneration
+        let listingPath: String
+        if didResolveRemote, !remotePath.isEmpty {
+            listingPath = remotePath
+        } else {
+            listingPath = target.sftpDefaultPath.isEmpty ? "." : target.sftpDefaultPath
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let client = try SFTPClient.connect(to: target)
-                let resolved = try client.realpath(defaultPath)
+                let resolved = try client.realpath(listingPath)
                 let listing = try client.list(path: resolved)
                 DispatchQueue.main.async {
-                    self?.client?.close()
-                    self?.client = client
-                    self?.remotePath = resolved
-                    self?.remoteEntries = listing.map(Self.entry(from:))
-                    self?.isConnecting = false
+                    guard let self, self.connectGeneration == generation else {
+                        client.close()
+                        return
+                    }
+                    self.client?.close()
+                    self.client = client
+                    self.didResolveRemote = true
+                    self.remotePath = resolved
+                    self.remoteEntries = listing.map(Self.entry(from:))
+                    self.isConnecting = false
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.isConnecting = false
-                    self?.errorMessage = error.localizedDescription
+                    guard let self, self.connectGeneration == generation else { return }
+                    self.isConnecting = false
+                    self.errorMessage = error.localizedDescription
                 }
             }
         }
@@ -436,9 +531,13 @@ final class FileBrowserModel {
         guard let selected = localEntries.first(where: { $0.id == selectedLocal }) else { return }
         let remote = (remotePath.hasSuffix("/") ? remotePath : remotePath + "/") + selected.name
         transfer(name: selected.name, kind: .upload) { job, report in
-            try self.client?.upload(local: URL(fileURLWithPath: selected.path), remote: remote, progress: report)
+            try self.client?.upload(
+                local: URL(fileURLWithPath: selected.path),
+                remote: remote,
+                progress: report,
+                isCancelled: { self.transfers?.isCancelled(job) == true }
+            )
             DispatchQueue.main.async { self.refreshRemote() }
-            _ = job
         }
     }
 
@@ -446,9 +545,13 @@ final class FileBrowserModel {
         guard let selected = remoteEntries.first(where: { $0.id == selectedRemote }) else { return }
         let local = URL(fileURLWithPath: localPath).appendingPathComponent(selected.name)
         transfer(name: selected.name, kind: .download) { job, report in
-            try self.client?.download(remote: selected.path, local: local, progress: report)
+            try self.client?.download(
+                remote: selected.path,
+                local: local,
+                progress: report,
+                isCancelled: { self.transfers?.isCancelled(job) == true }
+            )
             DispatchQueue.main.async { self.loadLocal() }
-            _ = job
         }
     }
 
@@ -511,6 +614,7 @@ final class FileBrowserModel {
             var speed: Double = 0
             do {
                 try work(id) { transferred, total in
+                    if self?.transfers?.isCancelled(id) == true { return }
                     let now = Date()
                     let elapsed = now.timeIntervalSince(lastTick)
                     if elapsed >= 0.2 || transferred == total {
@@ -531,6 +635,7 @@ final class FileBrowserModel {
                     }
                 }
                 DispatchQueue.main.async {
+                    guard self?.transfers?.isCancelled(id) != true else { return }
                     job.status = .finished
                     job.message = "完成"
                     job.transferred = max(job.transferred, job.total)
@@ -539,9 +644,20 @@ final class FileBrowserModel {
                 }
             } catch {
                 DispatchQueue.main.async {
-                    job.status = .failed
-                    job.message = error.localizedDescription
+                    if self?.transfers?.isCancelled(id) == true {
+                        job.status = .cancelled
+                        job.message = "已取消"
+                    } else {
+                        job.status = .failed
+                        job.message = error.localizedDescription
+                    }
+                    job.bytesPerSecond = 0
                     self?.transfers?.upsert(job)
+                    if kind == .upload {
+                        self?.refreshRemote()
+                    } else {
+                        self?.loadLocal()
+                    }
                 }
             }
         }
@@ -554,7 +670,26 @@ final class FileBrowserModel {
             isDirectory: item.isDirectory,
             isSymlink: item.isSymlink,
             size: item.size,
+            modified: item.modified,
             systemImage: item.systemImage
         )
+    }
+}
+
+/// 按 SFTP 标签保留目录与连接。切走标签时 SwiftUI 会拆掉视图，不走这里就会回到默认路径。
+final class FileBrowserRegistry {
+    static let shared = FileBrowserRegistry()
+
+    private var models: [UUID: FileBrowserModel] = [:]
+
+    func model(for tabID: UUID) -> FileBrowserModel {
+        if let existing = models[tabID] { return existing }
+        let created = FileBrowserModel()
+        models[tabID] = created
+        return created
+    }
+
+    func close(_ tabID: UUID) {
+        models.removeValue(forKey: tabID)?.shutdown()
     }
 }

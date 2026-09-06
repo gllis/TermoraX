@@ -49,6 +49,10 @@ final class TerminalRegistry {
             view.terminate()
         }
     }
+
+    func reconnect(_ tabID: UUID) {
+        views[tabID]?.reconnect()
+    }
 }
 
 /// 等宽字体 + 中文 cascade，避免 CJK 变成 tofu。
@@ -197,6 +201,23 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
         process.terminate()
     }
 
+    /// 杀掉当前 ssh/shell，清空屏幕，再用当初的启动闭包重新连。
+    func reconnect() {
+        ptyWriteEpoch.bump()
+        if zmodem.isActive {
+            zmodem.cancel()
+        }
+        let outgoing: LocalProcess = process
+        process = LocalProcess(delegate: self)
+        outgoing.terminate()
+        started = false
+        getTerminal().resetToInitialState()
+        feed(text: "\u{1b}[90m正在重连…\u{1b}[0m\r\n")
+        if window != nil {
+            tryStart()
+        }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         tryStart()
@@ -341,6 +362,7 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
     }
 
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
+        guard source === process else { return }
         let display: String
         if let exitCode {
             let code = exitCode > 255 ? (exitCode >> 8) & 0xFF : exitCode

@@ -30,6 +30,7 @@ enum SFTPError: LocalizedError {
     case protocolFailure(String)
     case status(UInt32, String)
     case processExited(Int32)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -41,6 +42,8 @@ enum SFTPError: LocalizedError {
             return message.isEmpty ? "SFTP 错误 \(code)" : message
         case .processExited(let code):
             return "SSH 进程已退出（\(code)）"
+        case .cancelled:
+            return "已取消"
         }
     }
 }
@@ -188,32 +191,51 @@ final class SFTPClient: @unchecked Sendable {
     func download(
         remote: String,
         local: URL,
-        progress: ((Int64, Int64) -> Void)? = nil
+        progress: ((Int64, Int64) -> Void)? = nil,
+        isCancelled: (() -> Bool)? = nil
     ) throws {
         let attrs = try stat(remote)
         let isDirectory = attrs.isDirectory
         let total = isDirectory ? (try remoteTreeSize(remote)) : Int64(attrs.size)
         var transferred: Int64 = 0
-        try downloadItem(remote: remote, local: local, isDirectory: isDirectory) { delta in
-            transferred += delta
-            progress?(transferred, max(total, transferred))
+        do {
+            try downloadItem(remote: remote, local: local, isDirectory: isDirectory, isCancelled: isCancelled) { delta in
+                transferred += delta
+                progress?(transferred, max(total, transferred))
+            }
+        } catch SFTPError.cancelled {
+            try? FileManager.default.removeItem(at: local)
+            throw SFTPError.cancelled
         }
     }
 
     func upload(
         local: URL,
         remote: String,
-        progress: ((Int64, Int64) -> Void)? = nil
+        progress: ((Int64, Int64) -> Void)? = nil,
+        isCancelled: (() -> Bool)? = nil
     ) throws {
         let total = Self.localTreeSize(local)
         var transferred: Int64 = 0
-        try uploadItem(local: local, remote: remote) { delta in
-            transferred += delta
-            progress?(transferred, max(total, transferred))
+        var isDirectory: ObjCBool = false
+        _ = FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory)
+        do {
+            try uploadItem(local: local, remote: remote, isCancelled: isCancelled) { delta in
+                transferred += delta
+                progress?(transferred, max(total, transferred))
+            }
+        } catch SFTPError.cancelled {
+            try? remove(path: remote, isDirectory: isDirectory.boolValue)
+            throw SFTPError.cancelled
         }
     }
 
-    private func uploadItem(local: URL, remote: String, onBytes: (Int64) -> Void) throws {
+    private func throwIfCancelled(_ isCancelled: (() -> Bool)?) throws {
+        if isCancelled?() == true { throw SFTPError.cancelled }
+    }
+
+    private func uploadItem(local: URL, remote: String, isCancelled: (() -> Bool)?, onBytes: (Int64) -> Void) throws {
+        try throwIfCancelled(isCancelled)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: local.path, isDirectory: &isDirectory) else {
             throw SFTPError.protocolFailure("本地文件不存在")
@@ -226,16 +248,15 @@ final class SFTPClient: @unchecked Sendable {
                 options: [.skipsHiddenFiles]
             )
             for item in items.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
-                try uploadItem(local: item, remote: join(remote, item.lastPathComponent), onBytes: onBytes)
+                try uploadItem(local: item, remote: join(remote, item.lastPathComponent), isCancelled: isCancelled, onBytes: onBytes)
             }
             return
         }
-        try uploadFile(local: local, remote: remote, onBytes: onBytes)
+        try uploadFile(local: local, remote: remote, isCancelled: isCancelled, onBytes: onBytes)
     }
 
-    private func uploadFile(local: URL, remote: String, onBytes: (Int64) -> Void) throws {
+    private func uploadFile(local: URL, remote: String, isCancelled: (() -> Bool)?, onBytes: (Int64) -> Void) throws {
         let handle = try open(path: remote, flags: 0x0002 | 0x0008 | 0x0010)
-        defer { try? closeHandle(handle) }
         let file = try FileHandle(forReadingFrom: local)
         defer { try? file.close() }
 
@@ -245,11 +266,22 @@ final class SFTPClient: @unchecked Sendable {
         let window = 8
         var offset: UInt64 = 0
         var inFlight: [Int] = []
+        var handleClosed = false
 
         lock.lock()
-        defer { lock.unlock() }
+        defer {
+            while !inFlight.isEmpty {
+                _ = try? readPacket()
+                inFlight.removeFirst()
+            }
+            if !handleClosed {
+                try? closeHandleLocked(handle)
+            }
+            lock.unlock()
+        }
 
         while true {
+            try throwIfCancelled(isCancelled)
             while inFlight.count < window {
                 let chunk = try file.read(upToCount: chunkSize) ?? Data()
                 if chunk.isEmpty { break }
@@ -265,9 +297,19 @@ final class SFTPClient: @unchecked Sendable {
             try expectOK(readPacket())
             onBytes(Int64(inFlight.removeFirst()))
         }
+        try closeHandleLocked(handle)
+        handleClosed = true
     }
 
-    private func downloadItem(remote: String, local: URL, isDirectory: Bool, onBytes: (Int64) -> Void) throws {
+    private func closeHandleLocked(_ handle: Data) throws {
+        var writer = ByteWriter()
+        writer.blob(handle)
+        try writePacket(type: 4, payload: writer.payload, includeID: true)
+        _ = try readPacket()
+    }
+
+    private func downloadItem(remote: String, local: URL, isDirectory: Bool, isCancelled: (() -> Bool)?, onBytes: (Int64) -> Void) throws {
+        try throwIfCancelled(isCancelled)
         if isDirectory {
             try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
             for item in try list(path: remote) {
@@ -275,15 +317,16 @@ final class SFTPClient: @unchecked Sendable {
                     remote: item.path,
                     local: local.appendingPathComponent(item.name),
                     isDirectory: item.isDirectory,
+                    isCancelled: isCancelled,
                     onBytes: onBytes
                 )
             }
             return
         }
-        try downloadFile(remote: remote, local: local, onBytes: onBytes)
+        try downloadFile(remote: remote, local: local, isCancelled: isCancelled, onBytes: onBytes)
     }
 
-    private func downloadFile(remote: String, local: URL, onBytes: (Int64) -> Void) throws {
+    private func downloadFile(remote: String, local: URL, isCancelled: (() -> Bool)?, onBytes: (Int64) -> Void) throws {
         let handle = try open(path: remote, flags: 0x0001)
         defer { try? closeHandle(handle) }
         FileManager.default.createFile(atPath: local.path, contents: nil)
@@ -291,6 +334,7 @@ final class SFTPClient: @unchecked Sendable {
         defer { try? out.close() }
         var offset: UInt64 = 0
         while true {
+            try throwIfCancelled(isCancelled)
             var writer = ByteWriter()
             writer.blob(handle)
             writer.u64(offset)
@@ -362,8 +406,7 @@ final class SFTPClient: @unchecked Sendable {
     }
 
     private func start(_ target: SSHTarget) throws {
-        let password = target.authMethod == "key" ? nil : SecretStore.password(for: target.id)
-        let ask = SSHCommand.askpassEnvironment(password: password)
+        let ask = SSHCommand.askpassEnvironment(password: SecretStore.password(for: target.id))
         secret = ask.secret
 
         var env = ProcessInfo.processInfo.environment

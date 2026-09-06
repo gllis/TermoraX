@@ -231,7 +231,9 @@ struct ContentView: View {
             FileManagerView(
                 session: workspace.node(in: nodes, id: sessionID),
                 transfers: workspace.transfers,
-                embeddedInTab: true
+                embeddedInTab: true,
+                tabID: tab.id,
+                reconnectNonce: workspace.sftpReconnectNonce[tab.id] ?? 0
             )
         case .terminal(let sessionID):
             TerminalSessionView(

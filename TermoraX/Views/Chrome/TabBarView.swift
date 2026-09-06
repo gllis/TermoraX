@@ -118,6 +118,8 @@ struct TabBarView: View {
             workspace.selectTab(tab.id)
         }
         .contextMenu {
+            Button("重连") { workspace.reconnect(tab.id) }
+            Divider()
             Button("关闭") { workspace.close(tab.id) }
             Button("关闭其他") { workspace.closeOthers(tab.id) }
             Button("关闭全部") { workspace.closeAll() }

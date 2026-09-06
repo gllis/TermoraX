@@ -173,8 +173,23 @@ final class WorkspaceController {
         append(WorkspaceTab(kind: .local, title: title))
     }
 
+    /// 保留标签，结束当前进程后再按原会话拉起。SFTP 用 nonce 通知已打开的文件管理器。
+    var sftpReconnectNonce: [UUID: Int] = [:]
+
+    func reconnect(_ id: UUID) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        selectTab(id)
+        switch tab.kind {
+        case .sftp:
+            sftpReconnectNonce[id, default: 0] += 1
+        case .terminal, .local:
+            TerminalRegistry.shared.reconnect(id)
+        }
+    }
+
     func close(_ id: UUID) {
         TerminalRegistry.shared.close(id)
+        FileBrowserRegistry.shared.close(id)
         let index = tabs.firstIndex(where: { $0.id == id })
         tabs.removeAll { $0.id == id }
         if selectedTabID == id {
@@ -194,6 +209,7 @@ final class WorkspaceController {
         let closing = tabs.filter { $0.id != id }
         for tab in closing {
             TerminalRegistry.shared.close(tab.id)
+            FileBrowserRegistry.shared.close(tab.id)
         }
         tabs.removeAll { $0.id != id }
         selectedTabID = id
@@ -203,6 +219,7 @@ final class WorkspaceController {
     func closeAll() {
         for tab in tabs {
             TerminalRegistry.shared.close(tab.id)
+            FileBrowserRegistry.shared.close(tab.id)
         }
         tabs.removeAll()
         selectedTabID = nil

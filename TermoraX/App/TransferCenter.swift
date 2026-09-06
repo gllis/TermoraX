@@ -10,7 +10,7 @@ import Observation
 
 struct TransferJob: Identifiable, Hashable {
     enum Kind: Hashable { case upload, download }
-    enum Status: Hashable { case running, finished, failed }
+    enum Status: Hashable { case running, finished, failed, cancelled }
 
     let id: UUID
     var name: String
@@ -57,9 +57,14 @@ struct ZModemProgress: Equatable {
 final class TransferCenter {
     var zmodem: ZModemProgress?
     var jobs: [TransferJob] = []
+    @ObservationIgnored private let cancelLock = NSLock()
+    @ObservationIgnored private var cancelledIDs: Set<UUID> = []
 
     func upsert(_ job: TransferJob) {
         if let index = jobs.firstIndex(where: { $0.id == job.id }) {
+            if jobs[index].status == .cancelled, job.status == .running {
+                return
+            }
             jobs[index] = job
         } else {
             jobs.insert(job, at: 0)
@@ -67,5 +72,31 @@ final class TransferCenter {
         if jobs.count > 40 {
             jobs = Array(jobs.prefix(40))
         }
+    }
+
+    func cancel(_ id: UUID) {
+        cancelLock.lock()
+        cancelledIDs.insert(id)
+        cancelLock.unlock()
+        if let index = jobs.firstIndex(where: { $0.id == id }), jobs[index].status == .running {
+            jobs[index].status = .cancelled
+            jobs[index].message = "已取消"
+            jobs[index].bytesPerSecond = 0
+        }
+    }
+
+    func isCancelled(_ id: UUID) -> Bool {
+        cancelLock.lock()
+        defer { cancelLock.unlock() }
+        return cancelledIDs.contains(id)
+    }
+
+    func clearHistory() {
+        let running = jobs.filter { $0.status == .running }
+        cancelLock.lock()
+        let keep = Set(running.map(\.id))
+        cancelledIDs = cancelledIDs.intersection(keep)
+        cancelLock.unlock()
+        jobs = running
     }
 }
