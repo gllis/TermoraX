@@ -7,6 +7,7 @@
 
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct FileManagerView: View {
     let session: SessionNode?
@@ -16,6 +17,7 @@ struct FileManagerView: View {
     var reconnectNonce: Int = 0
 
     @State private var sidebarModel = FileBrowserModel()
+    @State private var remoteDropTargeted = false
 
     private var browser: FileBrowserModel {
         if let tabID {
@@ -132,14 +134,20 @@ struct FileManagerView: View {
                 }
             }
             .buttonStyle(.borderless)
-            .padding(8)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
 
             fileList(entries: entries, selected: selected, isRemote: isRemote)
         }
         .frame(minWidth: 0, maxWidth: .infinity)
+        .onRemoteFileDrop(enabled: isRemote, isTargeted: $remoteDropTargeted) { providers in
+            handleRemoteDrop(providers, into: browser.remotePath)
+        }
         .overlay {
             if isRemote && browser.isConnecting {
                 ProgressView("正在连接 SFTP…")
+            } else if isRemote && remoteDropTargeted {
+                dropOverlay(title: "松开以上传到当前目录")
             }
         }
     }
@@ -155,7 +163,7 @@ struct FileManagerView: View {
                     fileRow(entry, selected: selected, isRemote: isRemote)
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, 1)
         }
         .background(Color(nsColor: .textBackgroundColor))
         .onKeyPress(.return) {
@@ -174,29 +182,36 @@ struct FileManagerView: View {
         isRemote: Bool
     ) -> some View {
         let isSelected = selected.wrappedValue == entry.id
-        return HStack(spacing: 8) {
+        let row = HStack(spacing: 8) {
             Image(systemName: entry.systemImage)
                 .foregroundStyle(entry.isDirectory ? Color.accentColor : Color.secondary)
                 .frame(width: 14)
             Text(entry.name)
                 .lineLimit(1)
-            Spacer(minLength: 8)
+                .truncationMode(.middle)
+                .help(entry.name)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Text(entry.sizeText)
                 .foregroundStyle(.secondary)
                 .font(.caption)
                 .monospacedDigit()
-                .frame(width: 70, alignment: .trailing)
-            Text(entry.dateText)
-                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .trailing)
+            Text("2024-12-18 18:29:34")
                 .font(.caption)
                 .monospacedDigit()
-                .frame(width: 148, alignment: .trailing)
+                .hidden()
+                .overlay(alignment: .trailing) {
+                    Text(entry.dateText)
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                        .monospacedDigit()
+                }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
         }
         .contentShape(Rectangle())
@@ -242,7 +257,94 @@ struct FileManagerView: View {
                 }
             }
         }
+
+        return Group {
+            if isRemote {
+                row
+            } else {
+                row.onDrag {
+                    NSItemProvider(contentsOf: URL(fileURLWithPath: entry.path)) ?? NSItemProvider()
+                }
+            }
+        }
     }
+
+    private func dropOverlay(title: String) -> some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .strokeBorder(Color.accentColor, lineWidth: 2)
+            .background(Color.accentColor.opacity(0.08))
+            .overlay {
+                Text(title)
+                    .font(.callout.weight(.medium))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.regularMaterial, in: Capsule())
+            }
+            .padding(4)
+            .allowsHitTesting(false)
+    }
+
+    private func handleRemoteDrop(_ providers: [NSItemProvider], into directory: String) -> Bool {
+        guard browser.isConnected else { return false }
+        let pasteboardURLs = Self.urlsFromFinderPasteboard()
+        if !pasteboardURLs.isEmpty {
+            browser.uploadLocalURLs(pasteboardURLs, intoRemoteDirectory: directory)
+            return true
+        }
+        let supported = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !supported.isEmpty else { return false }
+        Task {
+            var urls: [URL] = []
+            urls.reserveCapacity(supported.count)
+            for provider in supported {
+                if let url = await Self.loadDroppedFileURL(provider) {
+                    urls.append(url)
+                }
+            }
+            await MainActor.run {
+                browser.uploadLocalURLs(urls, intoRemoteDirectory: directory)
+            }
+        }
+        return true
+    }
+
+    private static func urlsFromFinderPasteboard() -> [URL] {
+        FileDropPasteboard.urls(from: NSPasteboard(name: .drag))
+    }
+
+    private static func loadDroppedFileURL(_ provider: NSItemProvider) async -> URL? {
+        let type = UTType.fileURL.identifier
+        guard provider.hasItemConformingToTypeIdentifier(type) else { return nil }
+        return await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: type, options: nil) { item, _ in
+                continuation.resume(returning: fileURL(fromDropItem: item))
+            }
+        }
+    }
+
+    private static func fileURL(fromDropItem item: NSSecureCoding?) -> URL? {
+        if let url = item as? URL, url.isFileURL { return url }
+        if let url = item as? NSURL, let resolved = url.absoluteURL, resolved.isFileURL {
+            return resolved
+        }
+        if let data = item as? Data {
+            if let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL {
+                return url
+            }
+            if let raw = String(data: data, encoding: .utf8) {
+                let trimmed = raw.trimmingCharacters(in: Self.dropTrim)
+                if let url = URL(string: trimmed), url.isFileURL { return url }
+            }
+        }
+        if let string = item as? String {
+            let trimmed = string.trimmingCharacters(in: Self.dropTrim)
+            if let url = URL(string: trimmed), url.isFileURL { return url }
+            if trimmed.hasPrefix("/") { return URL(fileURLWithPath: trimmed) }
+        }
+        return nil
+    }
+
+    private static let dropTrim = CharacterSet(charactersIn: "\0").union(.whitespacesAndNewlines)
 
     private var transferList: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -345,6 +447,7 @@ final class FileBrowserModel {
     var isConnecting = false
     var errorMessage: String?
     weak var transfers: TransferCenter?
+    var isConnected: Bool { client != nil }
 
     private var client: SFTPClient?
     private var target: SSHTarget?
@@ -529,16 +632,38 @@ final class FileBrowserModel {
 
     func uploadSelected() {
         guard let selected = localEntries.first(where: { $0.id == selectedLocal }) else { return }
-        let remote = (remotePath.hasSuffix("/") ? remotePath : remotePath + "/") + selected.name
-        transfer(name: selected.name, kind: .upload) { job, report in
-            try self.client?.upload(
-                local: URL(fileURLWithPath: selected.path),
-                remote: remote,
-                progress: report,
-                isCancelled: { self.transfers?.isCancelled(job) == true }
-            )
-            DispatchQueue.main.async { self.refreshRemote() }
+        uploadLocalURLs([URL(fileURLWithPath: selected.path)], intoRemoteDirectory: remotePath)
+    }
+
+    func uploadLocalURLs(_ urls: [URL], intoRemoteDirectory directory: String) {
+        guard client != nil else {
+            errorMessage = "SFTP 未连接"
+            return
         }
+        let dest = directory.isEmpty ? remotePath : directory
+        for url in urls {
+            let local = url.standardizedFileURL
+            guard FileManager.default.fileExists(atPath: local.path) else { continue }
+            let name = local.lastPathComponent
+            guard !name.isEmpty, name != ".", name != ".." else { continue }
+            let remote = joinRemote(dest, name)
+            transfer(name: name, kind: .upload) { job, report in
+                let access = local.startAccessingSecurityScopedResource()
+                defer { if access { local.stopAccessingSecurityScopedResource() } }
+                try self.client?.upload(
+                    local: local,
+                    remote: remote,
+                    progress: report,
+                    isCancelled: { self.transfers?.isCancelled(job) == true }
+                )
+                DispatchQueue.main.async { self.refreshRemote() }
+            }
+        }
+    }
+
+    private func joinRemote(_ directory: String, _ name: String) -> String {
+        if directory == "/" { return "/" + name }
+        return (directory.hasSuffix("/") ? directory : directory + "/") + name
     }
 
     func downloadSelected() {
@@ -691,5 +816,36 @@ final class FileBrowserRegistry {
 
     func close(_ tabID: UUID) {
         models.removeValue(forKey: tabID)?.shutdown()
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func onRemoteFileDrop(
+        enabled: Bool,
+        isTargeted: Binding<Bool>,
+        perform: @escaping ([NSItemProvider]) -> Bool
+    ) -> some View {
+        if enabled {
+            onDrop(of: [.fileURL], isTargeted: isTargeted, perform: perform)
+        } else {
+            self
+        }
+    }
+}
+
+enum FileDropPasteboard {
+    static func urls(from board: NSPasteboard) -> [URL] {
+        if let urls = board.readObjects(
+            forClasses: [NSURL.self],
+            options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]
+        ) as? [URL] {
+            let files = urls.filter(\.isFileURL)
+            if !files.isEmpty { return files }
+        }
+        if let paths = board.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] {
+            return paths.map { URL(fileURLWithPath: $0) }
+        }
+        return []
     }
 }

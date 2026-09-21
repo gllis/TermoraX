@@ -5,6 +5,7 @@
 //  新建 / 编辑会话。端口不用带千分位的 Number 格式；窗口按内容高度收紧。
 //
 
+import AppKit
 import SwiftData
 import SwiftUI
 
@@ -49,8 +50,13 @@ struct SessionEditorView: View {
                             SecureField("密码", text: $password)
                         }
                         if authMethod == "key" {
-                            TextField("私钥路径", text: $privateKeyPath)
-                                .help("例如 ~/.ssh/id_ed25519")
+                            LabeledContent("私钥路径") {
+                                HStack(spacing: 6) {
+                                    TextField("", text: $privateKeyPath, prompt: Text("例如 ~/.ssh/id_ed25519"))
+                                    Button("浏览…") { pickPrivateKey() }
+                                }
+                            }
+                            .help("选择本机私钥文件，例如 ~/.ssh/id_ed25519")
                             SecureField("私钥密码（可选）", text: $keyPassphrase)
                                 .help("密钥未加密可留空；加密私钥请填写口令，连接时自动解锁。")
                         }
@@ -144,6 +150,44 @@ struct SessionEditorView: View {
         }
         try? modelContext.save()
         dismiss()
+    }
+
+    private func pickPrivateKey() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.treatsFilePackagesAsDirectories = true
+        panel.message = "选择 SSH 私钥"
+        panel.prompt = "选择"
+
+        let expanded = AppPaths.expandHome(privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines))
+        if !expanded.isEmpty {
+            let current = URL(fileURLWithPath: expanded)
+            if FileManager.default.fileExists(atPath: current.path) {
+                panel.directoryURL = current.deletingLastPathComponent()
+            }
+        }
+        if panel.directoryURL == nil {
+            let sshDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
+            if FileManager.default.fileExists(atPath: sshDir.path) {
+                panel.directoryURL = sshDir
+            }
+        }
+
+        if panel.runModal() == .OK, let url = panel.url {
+            privateKeyPath = displayPath(url)
+        }
+    }
+
+    private func displayPath(_ url: URL) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if url.path == home { return "~" }
+        if url.path.hasPrefix(home + "/") {
+            return "~" + String(url.path.dropFirst(home.count))
+        }
+        return url.path
     }
 
     private func nextIndex(_ parent: SessionNode?) -> Int {
