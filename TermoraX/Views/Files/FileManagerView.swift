@@ -69,6 +69,7 @@ struct FileManagerView: View {
             if let session, session.isSSH {
                 model.connect(session)
             }
+            noteTabFocus()
         }
         .onChange(of: session?.id) { _, _ in
             if let session, session.isSSH {
@@ -80,6 +81,12 @@ struct FileManagerView: View {
                 model.forceReconnect(session)
             }
         }
+    }
+
+    /// 光标进入嵌入标签的文件管理器时切到英文。侧栏里的同一视图不触发。
+    private func noteTabFocus() {
+        guard embeddedInTab else { return }
+        EnglishInputSource.activateIfEnabled()
     }
 
     private func pane(
@@ -101,6 +108,7 @@ struct FileManagerView: View {
                     .onSubmit {
                         if isRemote { browser.refreshRemote() } else { browser.loadLocal() }
                     }
+                    .simultaneousGesture(TapGesture().onEnded { noteTabFocus() })
                 Button {
                     if isRemote { browser.goUpRemote() } else { browser.goUpLocal() }
                 } label: {
@@ -218,6 +226,7 @@ struct FileManagerView: View {
         .highPriorityGesture(
             TapGesture(count: 2).onEnded {
                 selected.wrappedValue = entry.id
+                noteTabFocus()
                 if isRemote {
                     browser.openRemote(entry)
                 } else {
@@ -227,6 +236,7 @@ struct FileManagerView: View {
         )
         .onTapGesture {
             selected.wrappedValue = entry.id
+            noteTabFocus()
         }
         .contextMenu {
             Button("打开") {

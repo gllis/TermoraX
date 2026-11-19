@@ -22,6 +22,10 @@ struct SettingsView: View {
                         .frame(width: 48, alignment: .trailing)
                         .foregroundStyle(.secondary)
                 }
+                Toggle("自动切换英文输入法", isOn: $settings.autoSwitchEnglishInput)
+                Text("切换标签，或光标进入标签时，自动将输入法切换为英文。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("复制与粘贴") {

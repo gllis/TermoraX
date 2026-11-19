@@ -153,6 +153,9 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
         font = TerminalFont.make(size: AppSettings.shared.terminalFontSize)
         nativeForegroundColor = NSColor(calibratedWhite: 0.88, alpha: 1)
         nativeBackgroundColor = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1)
+        // Overlay scrollers outside NSScrollView stay at zero width and never appear.
+        scrollerStyle = .legacy
+        showLegacyScroller()
         caretColor = NSColor(calibratedWhite: 0.92, alpha: 1)
         caretTextColor = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1)
         zmodem.sendToHost = { [weak self] bytes in
@@ -239,6 +242,19 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
         super.viewDidEndLiveResize()
         syncSizeFromBounds()
         notifyPtySize()
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            EnglishInputSource.activateIfEnabled()
+        }
+        return accepted
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        EnglishInputSource.activateIfEnabled()
+        super.mouseDown(with: event)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -490,6 +506,7 @@ final class TerminalHostView: NSView {
         self.terminal = terminal
         super.init(frame: .zero)
         wantsLayer = true
+        clipsToBounds = true
         layer?.backgroundColor = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1).cgColor
         terminal.removeFromSuperview()
         terminal.translatesAutoresizingMaskIntoConstraints = true
@@ -499,6 +516,25 @@ final class TerminalHostView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        pinTitlebarSeparator()
+        DispatchQueue.main.async { [weak self] in
+            self?.pinTitlebarSeparator()
+        }
+    }
+
+    /// macOS 27 会在这层不透明视图进入窗口后收起标题栏分隔线，下一轮再钉一次。
+    private func pinTitlebarSeparator() {
+        guard let window else { return }
+        if window.titlebarSeparatorStyle != .line {
+            window.titlebarSeparatorStyle = .line
+        }
+        if window.titlebarAppearsTransparent {
+            window.titlebarAppearsTransparent = false
+        }
     }
 
     override func layout() {
@@ -512,7 +548,7 @@ final class TerminalHostView: NSView {
     }
 
     private func applyTerminalFrame() {
-        let next = bounds.integral
+        let next = bounds.insetBy(dx: 5, dy: 5).integral
         guard next.width >= 80, next.height >= 40 else { return }
         if terminal.frame != next {
             terminal.frame = next
@@ -521,8 +557,14 @@ final class TerminalHostView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    override func mouseDown(with event: NSEvent) {
+        EnglishInputSource.activateIfEnabled()
+        window?.makeFirstResponder(terminal)
+    }
+
     override func becomeFirstResponder() -> Bool {
-        window?.makeFirstResponder(terminal) ?? false
+        EnglishInputSource.activateIfEnabled()
+        return window?.makeFirstResponder(terminal) ?? false
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

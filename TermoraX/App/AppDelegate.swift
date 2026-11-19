@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let window = notification.object as? NSWindow else { return }
         guard window.identifier?.rawValue == "TermoraX.main" else { return }
         windowProxy.attach(to: window)
+        EnglishInputSource.activateForKeyWindow(window)
     }
 }
 

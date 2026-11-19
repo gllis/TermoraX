@@ -67,6 +67,11 @@ final class AppSettings {
         didSet { persist(quickCopyPaste, key: Key.quickCopyPaste) }
     }
 
+    /// 切换标签或光标进入标签时，把输入法切到英文。默认关闭。
+    var autoSwitchEnglishInput: Bool {
+        didSet { persist(autoSwitchEnglishInput, key: Key.autoSwitchEnglishInput) }
+    }
+
     var closeBehavior: CloseBehavior {
         didSet { persist(closeBehavior.rawValue, key: Key.closeBehavior) }
     }
@@ -108,6 +113,7 @@ final class AppSettings {
         let storedSize = defaults.object(forKey: Key.fontSize) as? Double ?? Self.defaultFontSize
         terminalFontSize = min(max(storedSize, Self.minFontSize), Self.maxFontSize)
         quickCopyPaste = defaults.bool(forKey: Key.quickCopyPaste)
+        autoSwitchEnglishInput = defaults.bool(forKey: Key.autoSwitchEnglishInput)
         closeBehavior = CloseBehavior(rawValue: defaults.string(forKey: Key.closeBehavior) ?? "") ?? .hideToDock
         zmodemReceivePath = defaults.string(forKey: Key.zmodemPath) ?? AppPaths.userDownloads.path
         let storedInterval = defaults.object(forKey: Key.activityInterval) as? Int
@@ -132,6 +138,7 @@ final class AppSettings {
     private enum Key {
         static let fontSize = "settings.terminalFontSize"
         static let quickCopyPaste = "settings.quickCopyPaste"
+        static let autoSwitchEnglishInput = "settings.autoSwitchEnglishInput"
         static let closeBehavior = "settings.closeBehavior"
         static let zmodemPath = "zmodemReceiveFolder"
         static let activityInterval = "settings.activitySaveInterval"

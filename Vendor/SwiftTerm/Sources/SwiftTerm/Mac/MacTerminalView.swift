@@ -41,6 +41,23 @@ import os.log
  * Use the `configureNativeColors()` to set the defaults colors for the view to match the OS
  * defaults, otherwise, this uses its own set of defaults colors.
  */
+/// Legacy scroller whose knob stays light on the terminal's dark background.
+final class VisibleTerminalScroller: NSScroller {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(white: 1, alpha: 0.08).setFill()
+        bounds.fill()
+        drawKnob()
+    }
+
+    override func drawKnob() {
+        let knob = rect(for: .knob).insetBy(dx: 3, dy: 3)
+        guard knob.width > 1, knob.height > 1 else { return }
+        let path = NSBezierPath(roundedRect: knob, xRadius: knob.width / 2, yRadius: knob.width / 2)
+        NSColor(white: 1, alpha: 0.62).setFill()
+        path.fill()
+    }
+}
+
 open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, TerminalDelegate {
 #if canImport(MetalKit)
     // Default to throttling Metal redraws during live-resize; set SWIFTTERM_METAL_LIVE_RESIZE_THROTTLE=0 to disable.
@@ -876,6 +893,14 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
     }
 
+    /// Legacy scrollbar, drawn in the light appearance so the track stays visible on a dark terminal.
+    public func showLegacyScroller() {
+        scrollerStyle = .legacy
+        scroller?.appearance = NSAppearance(named: .aqua)
+        scroller?.wantsLayer = true
+        updateScrollerFrame()
+    }
+
     /// Style for the terminal's scroll indicator. Defaults to `.overlay` which auto-hides.
     /// Set to `.legacy` for an always-visible scrollbar.
     public var scrollerStyle: NSScroller.Style = .overlay {
@@ -896,18 +921,12 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     func setupScroller()
     {
         if scroller == nil {
-            scroller = NSScroller(frame: .zero)
-            scroller.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(scroller)
-
-            // Use Auto Layout to position the scroller. This ensures correct layout
-            // whether the parent view uses frame-based or constraint-based layout.
-            NSLayoutConstraint.activate([
-                scroller.trailingAnchor.constraint(equalTo: trailingAnchor),
-                scroller.topAnchor.constraint(equalTo: topAnchor),
-                scroller.bottomAnchor.constraint(equalTo: bottomAnchor),
-                scroller.widthAnchor.constraint(equalToConstant: scrollerWidth)
-            ])
+            scroller = VisibleTerminalScroller(frame: .zero)
+            // Frame layout. Constraints on this view collapse to zero width once the
+            // terminal is hosted by SwiftUI, which hides the bar entirely.
+            scroller.translatesAutoresizingMaskIntoConstraints = true
+            scroller.autoresizingMask = [.minXMargin, .height]
+            addSubview(scroller, positioned: .above, relativeTo: nil)
         }
         scroller.scrollerStyle = scrollerStyle
         scroller.knobProportion = 0.1
@@ -917,10 +936,15 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         scroller.action = #selector(scrollerActivated)
         scroller.target = self
+        updateScrollerFrame()
     }
 
     func updateScrollerFrame() {
-        // Scroller position is managed by Auto Layout constraints
+        guard let scroller else { return }
+        // Overlay style reports a zero control width, so the bar never has a frame
+        // and does not show. Always give it the legacy track width.
+        let width = max(scrollerWidth, NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy))
+        scroller.frame = NSRect(x: bounds.maxX - width, y: 0, width: width, height: bounds.height)
     }
 
     /// This method sents the `nativeForegroundColor` and `nativeBackgroundColor`
@@ -940,7 +964,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
         
     private var scrollerWidth: CGFloat {
-        NSScroller.scrollerWidth(for: .regular, scrollerStyle: scrollerStyle)
+        let measured = NSScroller.scrollerWidth(for: .regular, scrollerStyle: scrollerStyle)
+        if measured > 1 { return measured }
+        return NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
     }
 
     private var reservedScrollerWidth: CGFloat {
@@ -1103,7 +1129,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     //
     // NSTextInputClient protocol implementation
     //
-    public override func becomeFirstResponder() -> Bool {
+    open override func becomeFirstResponder() -> Bool {
         let response = super.becomeFirstResponder()
         if response {
             hasFocus = true

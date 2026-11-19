@@ -39,6 +39,17 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.18), value: sessionPinned)
         .animation(.easeInOut(duration: 0.18), value: filePinned)
         .animation(.easeInOut(duration: 0.18), value: workspace.commandPanelExpanded)
+        .scrollEdgeEffectStyle(.hard, for: .top)
+        .overlay(alignment: .top) {
+            // 终端视图在场时，macOS 27 会收起标题栏下的系统分隔线。补一条同样位置的线。
+            if workspace.selectedTab?.isSFTP == false {
+                Rectangle()
+                    .fill(Color(nsColor: .separatorColor))
+                    .frame(height: 1 / (NSScreen.main?.backingScaleFactor ?? 2))
+                    .frame(maxWidth: .infinity)
+                    .allowsHitTesting(false)
+            }
+        }
         .toolbar { toolbar }
         .sheet(item: $workspace.pendingEdit) { token in
             SessionEditorView(token: token)
@@ -67,8 +78,11 @@ struct ContentView: View {
         .onChange(of: settings.activitySaveInterval) { _, _ in
             workspace.rescheduleActivitySave()
         }
-        .onChange(of: workspace.selectedTabID) { _, _ in
+        .onChange(of: workspace.selectedTabID) { _, id in
             workspace.persistActivity()
+            if id != nil {
+                EnglishInputSource.activateIfEnabled()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .termoraNewSession)) { _ in
             workspace.pendingEdit = .newSession(parent: nil)
@@ -175,7 +189,8 @@ struct ContentView: View {
     private var mainColumn: some View {
         VStack(spacing: 0) {
             TabBarView(workspace: workspace)
-            Divider()
+                .overlay(alignment: .bottom) { Hairline() }
+                .zIndex(1)
             ZStack(alignment: .top) {
                 workspaceBody
                 if let progress = workspace.transfers.zmodem {
@@ -186,6 +201,8 @@ struct ContentView: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .clipped()
             if commandPinned {
                 Divider()
                 PanelResizeHandle(vertical: false, inverted: true, current: commandHeight, range: AppTheme.commandHeightRange) {
@@ -197,20 +214,9 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: clampedCommandHeight)
                     .clipped()
-            } else {
-                AutoHideStrip(title: "快速命令", systemImage: "square.grid.2x2", axis: .horizontal) {
-                    workspace.commandPanelExpanded.toggle()
-                }
-                if workspace.commandPanelExpanded {
-                    commandPanel
-                        .frame(maxWidth: .infinity)
-                        .frame(height: clampedCommandHeight)
-                        .clipped()
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
             }
         }
-        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .clipped()
     }
 
@@ -305,18 +311,51 @@ struct ContentView: View {
     }
 }
 
+/// 标签栏底边的 1pt 分隔。`Divider` 挨着终端 `NSView` 时会被压成 0 高。
+private struct Hairline: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(height: 1)
+            .frame(maxWidth: .infinity)
+            .fixedSize(horizontal: false, vertical: true)
+            .allowsHitTesting(false)
+    }
+}
+
 /// 给主窗口打上 `TermoraX.main`，关闭代理只接管这一扇，避免误伤设置窗口。
+/// macOS 27 在终端视图挂上后会把 automatic 标题栏分隔线收起，下一轮再钉回一条线。
 private struct WindowIdentifierSetter: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            view.window?.identifier = NSUserInterfaceItemIdentifier("TermoraX.main")
-        }
-        return view
+        MainWindowAnchorView()
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        nsView.window?.identifier = NSUserInterfaceItemIdentifier("TermoraX.main")
+        (nsView as? MainWindowAnchorView)?.pinChrome()
+        DispatchQueue.main.async {
+            (nsView as? MainWindowAnchorView)?.pinChrome()
+        }
+    }
+}
+
+private final class MainWindowAnchorView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        pinChrome()
+    }
+
+    func pinChrome() {
+        guard let window else { return }
+        let marker = NSUserInterfaceItemIdentifier("TermoraX.main")
+        if window.identifier != marker {
+            window.identifier = marker
+        }
+        if window.titlebarSeparatorStyle != .line {
+            window.titlebarSeparatorStyle = .line
+        }
+        if window.titlebarAppearsTransparent {
+            window.titlebarAppearsTransparent = false
+        }
     }
 }
 
