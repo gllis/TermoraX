@@ -1,6 +1,7 @@
-// swift-tools-version:6.0
-// SwiftTerm v1.19.0 (https://github.com/migueldeicaza/SwiftTerm/releases/tag/v1.19.0)
+// swift-tools-version:6.2
+// SwiftTerm v1.99.3 (https://github.com/migueldeicaza/SwiftTerm/releases/tag/v1.99.3)
 // Vendored for TermoraX: build plugin omitted so Xcode can compile this local package.
+// SwiftTermBuildInfo.swift and SwiftTermTerminfo.swift stand in for that plugin.
 
 import PackageDescription
 
@@ -22,5 +23,5 @@ let package = Package(
             exclude: ["Mac/README.md", "Apple/Metal/Shaders.metal"]
         ),
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

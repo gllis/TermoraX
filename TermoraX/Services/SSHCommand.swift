@@ -43,15 +43,26 @@ enum SSHCommand {
     }
 
     /// 传给 `ssh` 的公共 `-o`。保活间隔取自「保存活动状态」秒数。
-    static func baseOptions(for target: SSHTarget) -> [String] {
+    /// `multiplex` 为 false 时不走 ControlMaster。SFTP 大文件必须单独建连，
+    /// 否则主连接被传输占满后，同一主机上的终端会话会一起停住。
+    static func baseOptions(for target: SSHTarget, multiplex: Bool = true) -> [String] {
         var args = [
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "UpdateHostKeys=yes",
-            "-o", "ControlMaster=auto",
-            "-o", option("ControlPath", AppPaths.controlPathTemplate),
-            "-o", "ControlPersist=120",
-            "-p", "\(target.port)",
         ]
+        if multiplex {
+            args += [
+                "-o", "ControlMaster=auto",
+                "-o", option("ControlPath", AppPaths.controlPathTemplate),
+                "-o", "ControlPersist=120",
+            ]
+        } else {
+            args += [
+                "-o", "ControlMaster=no",
+                "-o", "ControlPath=none",
+            ]
+        }
+        args += ["-p", "\(target.port)"]
         let keepAlive = AppSettings.shared.activitySaveInterval
         if keepAlive > 0 {
             args += [
@@ -106,7 +117,7 @@ enum SSHCommand {
     }
 
     static func sftpArguments(for target: SSHTarget) -> [String] {
-        baseOptions(for: target) + [
+        baseOptions(for: target, multiplex: false) + [
             "-e", "none",
             "\(user(username: target.username))@\(target.host)",
             "-s", "sftp",

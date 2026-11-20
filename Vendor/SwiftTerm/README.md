@@ -10,21 +10,27 @@ custom scenarios. It has been used in several commercially available SSH clients
 
 Check the [API Documentation](https://migueldeicaza.github.io/SwiftTerm/documentation/swiftterm/)
 
+This README and the API documentation describe the new SwiftTerm 2.0 API. To
+use the SwiftTerm 1.x API, use the [`v1.x` branch](https://github.com/migueldeicaza/SwiftTerm/tree/v1.x)
+or a [tagged 1.x release](https://github.com/migueldeicaza/SwiftTerm/tags).
+
+If you use SwiftTerm 1.0, read the [SwiftTerm 2.0 migration guide](https://migueldeicaza.github.io/SwiftTerm/documentation/swiftterm/migratingfrom1to2/).
+
 This repository contains both a terminal emulator engine that is UI agnostic, as well as
 front-ends for this engine for iOS using UIKit, and macOS using AppKit.   A curses-based
 terminal emulator (to emulate an xterm inside a console application) is available as
 part of the [TermKit](https://github.com/migueldeicaza/TermKit) library. 
 
-**Sample Code** There are a couple of minimal sample apps for Mac and iOS showing how to 
-use the library inside the `TerminalApp` directory.   
+Community
+=========
 
-* The sample Mac app has much of the functionality of MacOS' Terminal.app, but without the configuration UI.   
-* The sample iOS application uses an SSH library to connect to a remote system (as there is no native shell
-on iOS to run) and includes a login UI to configure the connection. 
+* [Discord](https://discord.gg/rgN3yzHg8G) server
+* [GitHub Discussions](https://github.com/migueldeicaza/SwiftTerm/discussions)
+* [GitHub Issues](https://github.com/migueldeicaza/SwiftTerm/issues)
 
 ## Companion Apps
 
-[Tecolot](https://github.com/migueldeicaza/Tecolot) is a MacOS Terminal.app 
+[Tecolot](https://github.com/migueldeicaza/Tecolot) is a MacOS Terminal.app
 replacement.
 
 [SwiftTermApp](https://github.com/migueldeicaza/SwiftTermApp) builds
@@ -34,6 +40,13 @@ It is a proof of concept for what you would need to do.
 
 [Pane](https://github.com/migueldeicaza/pane) is a terminal
 multiplexor, similar to tmux.
+
+**Sample Code** There are a couple of minimal sample apps for Mac and iOS showing how to 
+use the library inside the `TerminalApp` directory.   
+
+* The sample Mac app has much of the functionality of MacOS' Terminal.app, but without the configuration UI.   
+* The sample iOS application uses an SSH library to connect to a remote system (as there is no native shell
+on iOS to run) and includes a login UI to configure the connection. 
 
 ## History
 
@@ -98,6 +111,33 @@ The SwiftTerm library itself contains the source code for both
 the engine and the front-ends.  The front-ends are conditionally
 compiled based on the target platform.
 
+## Embedded Swift
+
+SwiftTerm has a Foundation-free, headless core for Embedded Swift. Select it
+with the `Embedded` package trait. It omits the Apple views, local-process
+host, image decoders, and Kitty Clipboard. Embedded builds require Swift 6.3
+or later. The portable host APIs are documented in the
+[DocC guide](Sources/SwiftTerm/Documentation.docc/PortableHosting.md).
+See the [Embedded Swift build and integration guide](Docs/embedded-swift.md)
+for trait, compiler, and target settings.
+
+## WebAssembly
+
+SwiftTerm supplies a browser and Node.js terminal engine with ABI version 1,
+copied render snapshots, generated reply bytes, and host-event queues. The
+TypeScript package loads either the Full or Embedded WASM reactor. The host
+supplies a renderer and PTY transport. The Full build supports PNG, Kitty,
+Sixel, iTerm graphics, and Kitty Clipboard; Embedded keeps terminal input,
+selection, scrollback, and bracketed paste while omitting graphics and
+clipboard support. A Canvas 2D example is included.
+
+See the [WebAssembly build and browser guide](Docs/wasm.md) for the pinned
+compiler/SDK pair, build commands, API use, limits, and tests.
+
+The [Web terminal sample](TerminalApp/WebTerminal/README.md) is a SwiftPM
+package with a Hummingbird server, WebSocket transport, and a local shell PTY.
+Run `TerminalApp/WebTerminal/run.sh` to start it on localhost.
+
 The engine is in this directory, while code for macOS lives under `Mac`, and
 code for iOS, lives under `iOS`.    Given that those two share a lot of common 
 traits, the shared code is under `Apple`.
@@ -143,9 +183,15 @@ Both AppKit and UIKit `TerminalView` expose `linkReporting`:
 
 `linkReporting` controls link discovery/tracking. Link activation is additionally gated by `linkHighlightMode`.
 
-When the user activates a link, `TerminalView` calls `TerminalViewDelegate.requestOpenLink(source:link:params:)`.
-For explicit OSC 8 hyperlinks, `params` includes parsed key/value metadata (if provided); implicit links use empty `params`.
-On macOS, the default delegate implementation opens links via `NSWorkspace`. On iOS/visionOS, handle `requestOpenLink` in your delegate.
+When the user activates a link, `TerminalView` calls `TerminalViewDelegate.requestOpenLink(source:request:)`.
+The `TerminalLinkRequest` has the link text from the terminal output, which is untrusted.
+`request.isExplicit` is true for an OSC 8 hyperlink. For an OSC 8 hyperlink, `request.params` includes parsed key/value metadata (if provided); implicit links use empty `params`.
+On macOS, the default delegate implementation checks the link and opens it via `NSWorkspace`. A custom delegate can call `request.openDefault()` to do the same.
+On iOS/visionOS, implement `requestOpenLink(source:request:)` in your delegate.
+`requestOpenLink(source:link:params:)` is deprecated.
+On macOS, that old method still receives a checked URL, so it cannot recover a
+source path's `:line` suffix. See [Link customization](Sources/SwiftTerm/Documentation.docc/Customization.md#migrate-a-macos-link-delegate)
+for a migration example and the checks needed when an app opens links itself.
 
 * On macOS, tracking is hover-based. The default highlight mode is `.hoverWithModifier`, so Command-hover and Command-click are the default link interaction.
 * On iOS/visionOS, tracking is driven by pointer/hover interactions (`UIPointerInteraction` / `UIHoverGestureRecognizer`), and tap activation depends on the active `linkHighlightMode` (including modifier requirements for modifier-based modes).
@@ -220,17 +266,27 @@ it will run this one.   To run the test suite, select the 'SwiftTerm' target
 instead, and you can use 'SwiftTermFuzz' to run the fuzzer.
 
 You can use `swift build` to build the package, and `swift test` to
-run the test suite.  For better test coverage, clone the esctest
-repository which contains comprehensive terminal emulator tests:
+run the test suite.  Debug builds skip the invariant checks that walk a
+whole row, which are too slow for everyday use; run the tests with
+`SWIFTTERM_EXPENSIVE_ASSERTS=1 swift test` to turn them on, as CI does.
+For better test coverage, fetch esctest, a
+conformance suite for terminal emulators:
 
 ```
 make clone-esctest
 swift test
 ```
 
-This clones the [esctest](https://github.com/migueldeicaza/esctest)
-repository (Python 3 branch) and enables the full terminal compliance
-test suite to run.
+This fetches a pinned commit of
+[esctest2](https://github.com/ThomasDickey/esctest2). `testKnownGood`
+then runs the esctest tests listed in
+`Tests/SwiftTermTests/Fixtures/esctest-known-good.txt`, and fails if one
+of them fails.
+
+To run the whole suite and see every failure, run `make esctest-report`,
+which writes `esctest.log`.  When a change makes more tests pass, make
+two logs and update the list with `scripts/esctest-known-good.py`; the
+script describes the steps.
 
 If using Xcode, you can select the "SwiftTerm" project, and then use Command-U 
 to run the test suite.
@@ -292,9 +348,8 @@ Midnight Commander
 <img width="969" alt="Screen Shot 2020-04-12 at 12 17 49 AM" src="https://user-images.githubusercontent.com/36863/79060466-49c50580-7c53-11ea-8514-bb4a31359662.png">
 
 Solid UTF-8 support, excellent rendering:
-<img width="799" alt="Screen Shot 2020-04-22 at 11 25 30 PM" src="https://user-images.githubusercontent.com/36863/80055786-95e43580-84f0-11ea-86dd-8dfb7f062b39.png">
-
-<img width="799" alt="Screen Shot 2020-04-22 at 11 25 24 PM" src="https://user-images.githubusercontent.com/36863/80055792-9977bc80-84f0-11ea-8cac-735d4a516a80.png">
+<img width="891" height="1699" alt="Image" src="https://github.com/user-attachments/assets/cb55eddb-ae96-417c-9fea-fb75faab2db2" />
+<img width="891" height="1699" alt="Image" src="https://github.com/user-attachments/assets/ae468839-b8d2-402c-8174-d519a84647e1" />
 
 Supports hyperlinks emitted by modern apps:
 

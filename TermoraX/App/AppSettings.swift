@@ -8,6 +8,23 @@
 import Foundation
 import Observation
 
+/// 应用外观。`system` 跟随系统的浅色 / 深色切换。
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case light
+    case dark
+    case system
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .light: return "浅色"
+        case .dark: return "深色"
+        case .system: return "自动"
+        }
+    }
+}
+
 /// 点击窗口关闭按钮时的行为。
 enum CloseBehavior: String, CaseIterable, Identifiable {
     case hideToDock
@@ -76,6 +93,13 @@ final class AppSettings {
         didSet { persist(closeBehavior.rawValue, key: Key.closeBehavior) }
     }
 
+    var appearance: AppAppearance {
+        didSet {
+            persist(appearance.rawValue, key: Key.appearance)
+            appearance.apply()
+        }
+    }
+
     var zmodemReceivePath: String {
         didSet { persist(zmodemReceivePath, key: Key.zmodemPath) }
     }
@@ -115,6 +139,7 @@ final class AppSettings {
         quickCopyPaste = defaults.bool(forKey: Key.quickCopyPaste)
         autoSwitchEnglishInput = defaults.bool(forKey: Key.autoSwitchEnglishInput)
         closeBehavior = CloseBehavior(rawValue: defaults.string(forKey: Key.closeBehavior) ?? "") ?? .hideToDock
+        appearance = AppAppearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
         zmodemReceivePath = defaults.string(forKey: Key.zmodemPath) ?? AppPaths.userDownloads.path
         let storedInterval = defaults.object(forKey: Key.activityInterval) as? Int
         activitySaveInterval = storedInterval ?? Self.defaultActivityInterval
@@ -140,6 +165,7 @@ final class AppSettings {
         static let quickCopyPaste = "settings.quickCopyPaste"
         static let autoSwitchEnglishInput = "settings.autoSwitchEnglishInput"
         static let closeBehavior = "settings.closeBehavior"
+        static let appearance = "settings.appearance"
         static let zmodemPath = "zmodemReceiveFolder"
         static let activityInterval = "settings.activitySaveInterval"
         static let workspaceSnapshot = "settings.workspaceSnapshot"

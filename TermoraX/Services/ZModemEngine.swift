@@ -88,6 +88,11 @@ final class ZModemEngine {
     private var finishWork: DispatchWorkItem?
     private var offerWatch: DispatchWorkItem?
     private var ackWatch: DispatchWorkItem?
+    /// A trailing `*` is a legal start of the ZMODEM header. Hold it only briefly:
+    /// a typed asterisk is echoed as that single byte and then nothing follows,
+    /// and keeping it forever leaves the cursor where it was.
+    private var partialFlush: DispatchWorkItem?
+    private let partialSignatureHold: TimeInterval = 0.05
     private var lastRemoteZRInit = Date.distantPast
 
     func cancel() {
@@ -110,6 +115,7 @@ final class ZModemEngine {
 
     /// Returns terminal bytes that must be displayed. `nil` means ZMODEM consumed the data.
     func ingest(_ slice: ArraySlice<UInt8>) -> [UInt8]? {
+        cancelPartialFlush()
         if mode != .idle {
             buffer.append(contentsOf: slice)
             pump()
@@ -125,14 +131,39 @@ final class ZModemEngine {
         }
 
         // Signature is 4 bytes (`**\x18B`). Only hold a possible partial match so the
-        // shell prompt is not delayed or replayed.
+        // shell prompt is not delayed or replayed. Release it if the rest never arrives,
+        // otherwise a typed `*` stays invisible and the cursor does not advance.
         let keep = partialSignatureLength(in: buffer)
+        if keep > 0 {
+            schedulePartialFlush()
+        }
         if keep == buffer.count {
             return []
         }
         let prefix = Array(buffer[..<(buffer.count - keep)])
         buffer.removeFirst(buffer.count - keep)
         return prefix
+    }
+
+    private func schedulePartialFlush() {
+        let work = DispatchWorkItem { [weak self] in
+            self?.flushPartialSignature()
+        }
+        partialFlush = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + partialSignatureHold, execute: work)
+    }
+
+    private func flushPartialSignature() {
+        partialFlush = nil
+        guard mode == .idle, !buffer.isEmpty, indexOfHeader(in: buffer) == nil else { return }
+        let held = buffer
+        buffer.removeAll(keepingCapacity: true)
+        onPassthrough?(held)
+    }
+
+    private func cancelPartialFlush() {
+        partialFlush?.cancel()
+        partialFlush = nil
     }
 
     private func partialSignatureLength(in bytes: [UInt8]) -> Int {
@@ -558,6 +589,7 @@ final class ZModemEngine {
     }
 
     private func finish(message: String, error: Bool, savedPath: String? = nil) {
+        cancelPartialFlush()
         finishWork?.cancel()
         finishWork = nil
         offerWatch?.cancel()

@@ -33,11 +33,15 @@ struct TransferJob: Identifiable, Hashable {
 
     var speedText: String {
         guard status == .running, bytesPerSecond > 0 else { return "" }
+        return Self.speedFormatter.string(fromByteCount: Int64(bytesPerSecond.rounded())) + "/s"
+    }
+
+    private static let speedFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        return formatter.string(fromByteCount: Int64(bytesPerSecond.rounded())) + "/s"
-    }
+        return formatter
+    }()
 }
 
 struct ZModemProgress: Equatable {
@@ -62,9 +66,10 @@ final class TransferCenter {
 
     func upsert(_ job: TransferJob) {
         if let index = jobs.firstIndex(where: { $0.id == job.id }) {
-            if jobs[index].status == .cancelled, job.status == .running {
-                return
-            }
+        // 结束后的进度包可能晚到。不能把「完成 / 失败 / 已取消」盖回「进行中」。
+        if jobs[index].status != .running, job.status == .running {
+            return
+        }
             jobs[index] = job
         } else {
             jobs.insert(job, at: 0)

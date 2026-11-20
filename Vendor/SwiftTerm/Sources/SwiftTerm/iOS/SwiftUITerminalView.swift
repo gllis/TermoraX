@@ -1,3 +1,4 @@
+#if !SWIFTTERM_EMBEDDED
 #if canImport(UIKit) && DEBUG
 import SwiftUI
 
@@ -38,10 +39,27 @@ private struct TerminalViewContainer: UIViewRepresentable {
         uiView.updateSizeIfNeeded()
     }
 
+    static func dismantleUIView(_ uiView: SwiftUITerminalHostView,
+                                coordinator: Coordinator) {
+        closeWhenMetalIsIdle(uiView)
+    }
+
+    /// Permanent owner teardown. A busy GPU keeps the view alive until the
+    /// renderer can detach safely; temporary hierarchy removal uses the view's
+    /// reversible window-attachment path instead.
+    @MainActor
+    private static func closeWhenMetalIsIdle(_ view: SwiftUITerminalHostView) {
+        guard !view.updateUiClosed() else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { @MainActor in
+            closeWhenMetalIsIdle(view)
+        }
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
 
+    @MainActor
     final class Coordinator: NSObject, TerminalViewDelegate {
         private var hasFedStartupData = false
 
@@ -60,7 +78,7 @@ private struct TerminalViewContainer: UIViewRepresentable {
         public func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
         public func send(source: TerminalView, data: ArraySlice<UInt8>) {}
         public func scrolled(source: TerminalView, position: Double) {}
-        public func requestOpenLink(source: TerminalView, link: String, params: [String : String]) {}
+        public func requestOpenLink(source: TerminalView, request: TerminalLinkRequest) {}
         public func bell(source: TerminalView) {}
         public func clipboardCopy(source: TerminalView, content: Data) {}
         public func clipboardRead(source: TerminalView) -> Data? { return nil }
@@ -111,3 +129,5 @@ struct PreviewTerminal_Previews: PreviewProvider {
     }
 }
 #endif
+
+#endif // !SWIFTTERM_EMBEDDED

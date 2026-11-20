@@ -13,7 +13,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let windowProxy = WindowCloseProxy()
 
+    override init() {
+        super.init()
+        AppSettings.shared.appearance.apply()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppSettings.shared.appearance.apply()
         // Broken SSH/SFTP pipes otherwise deliver SIGPIPE and abort the app.
         signal(SIGPIPE, SIG_IGN)
         NotificationCenter.default.addObserver(

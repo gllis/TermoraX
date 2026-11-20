@@ -51,6 +51,7 @@ struct ContentView: View {
             }
         }
         .toolbar { toolbar }
+        .toolbar(removing: .title)
         .sheet(item: $workspace.pendingEdit) { token in
             SessionEditorView(token: token)
         }
@@ -124,6 +125,7 @@ struct ContentView: View {
             }
             .help(filePinned ? "隐藏文件管理器" : "显示文件管理器")
         }
+        ToolbarSpacer(.flexible)
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
                 workspace.pendingEdit = .newGroup(parent: nil)
@@ -355,6 +357,19 @@ private final class MainWindowAnchorView: NSView {
         }
         if window.titlebarAppearsTransparent {
             window.titlebarAppearsTransparent = false
+        }
+        // 标题只留在「窗口」菜单里，工具栏不再画出 TermoraX。
+        if window.titleVisibility != .hidden {
+            window.titleVisibility = .hidden
+        }
+        // 工具栏固定为仅图标，并去掉右键里的「图标 / 文本」切换。
+        if let toolbar = window.toolbar {
+            if toolbar.displayMode != .iconOnly {
+                toolbar.displayMode = .iconOnly
+            }
+            if toolbar.allowsDisplayModeCustomization {
+                toolbar.allowsDisplayModeCustomization = false
+            }
         }
     }
 }

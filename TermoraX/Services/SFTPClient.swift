@@ -53,10 +53,15 @@ final class SFTPClient: @unchecked Sendable {
     private let stdin = Pipe()
     private let stdout = Pipe()
     private let stderr = Pipe()
+    /// 只保护 SFTP 请求顺序。关闭和存活检查走 `stateLock`，避免主线程等整份大文件传完。
     private let lock = NSLock()
+    private let stateLock = NSLock()
     private var requestID: UInt32 = 0
     private var secret: URL?
     private var closed = false
+    private var stdoutFD: Int32 = -1
+    private var stdinFD: Int32 = -1
+    private var stderrFD: Int32 = -1
 
     static func connect(to target: SSHTarget) throws -> SFTPClient {
         let client = SFTPClient()
@@ -66,24 +71,38 @@ final class SFTPClient: @unchecked Sendable {
     }
 
     func close() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !closed else { return }
+        stateLock.lock()
+        if closed {
+            stateLock.unlock()
+            return
+        }
         closed = true
-        process.terminate()
-        if let secret {
-            try? FileManager.default.removeItem(at: secret)
+        let secretURL = secret
+        secret = nil
+        stateLock.unlock()
+        // 传输线程可能正堵在 read 上并握着协议锁。这里只结束进程把读唤醒，不能去等那把锁。
+        if process.isRunning {
+            process.terminate()
+        }
+        if let secretURL {
+            try? FileManager.default.removeItem(at: secretURL)
         }
     }
 
     var isAlive: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return !closed && process.isRunning
+        stateLock.lock()
+        let wasClosed = closed
+        stateLock.unlock()
+        return !wasClosed && process.isRunning
     }
 
     deinit {
-        process.terminate()
+        if process.isRunning {
+            process.terminate()
+        }
+        if stdoutFD >= 0 { Darwin.close(stdoutFD) }
+        if stdinFD >= 0 { Darwin.close(stdinFD) }
+        if stderrFD >= 0 { Darwin.close(stderrFD) }
         if let secret {
             try? FileManager.default.removeItem(at: secret)
         }
@@ -420,6 +439,54 @@ final class SFTPClient: @unchecked Sendable {
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
+        try adoptPipes()
+    }
+
+    /// 读写走 dup 出来的裸 fd，不经过 `FileHandle`，避免管道被登记到主线程的 run loop。
+    /// stderr 单独读掉，否则缓冲区写满后 ssh 会停住。
+    private func adoptPipes() throws {
+        let outFD = dup(stdout.fileHandleForReading.fileDescriptor)
+        let inFD = dup(stdin.fileHandleForWriting.fileDescriptor)
+        let errFD = dup(stderr.fileHandleForReading.fileDescriptor)
+        guard outFD >= 0, inFD >= 0, errFD >= 0 else {
+            if outFD >= 0 { Darwin.close(outFD) }
+            if inFD >= 0 { Darwin.close(inFD) }
+            if errFD >= 0 { Darwin.close(errFD) }
+            throw SFTPError.protocolFailure("无法建立 SFTP 通道")
+        }
+        stdoutFD = outFD
+        stdinFD = inFD
+        stderrFD = errFD
+        for fd in [outFD, inFD, errFD] {
+            _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+            let flags = fcntl(fd, F_GETFL)
+            if flags >= 0 {
+                _ = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)
+            }
+        }
+        try? stdout.fileHandleForReading.close()
+        try? stdin.fileHandleForWriting.close()
+        try? stderr.fileHandleForReading.close()
+        drainStderr(errFD)
+    }
+
+    /// stderr 不读的话，管道一满 ssh 就停写，整条传输卡死。
+    private func drainStderr(_ fd: Int32) {
+        Thread.detachNewThread {
+            var buffer = [UInt8](repeating: 0, count: 8192)
+            while true {
+                let n = Darwin.read(fd, &buffer, buffer.count)
+                if n > 0 { continue }
+                if n < 0 && errno == EINTR { continue }
+                break
+            }
+        }
+    }
+
+    private func isClosed() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return closed
     }
 
     private func initialize() throws {
@@ -471,10 +538,12 @@ final class SFTPClient: @unchecked Sendable {
     }
 
     private func writeAll(_ data: Data) throws {
-        if closed || !process.isRunning {
-            throw SFTPError.processExited(process.terminationStatus)
+        if isClosed() || !process.isRunning {
+            let code: Int32 = process.isRunning ? 0 : process.terminationStatus
+            throw SFTPError.processExited(code)
         }
-        let fd = stdin.fileHandleForWriting.fileDescriptor
+        let fd = stdinFD
+        guard fd >= 0 else { throw SFTPError.notConnected }
         try data.withUnsafeBytes { raw in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
             var sent = 0
@@ -486,7 +555,8 @@ final class SFTPClient: @unchecked Sendable {
                 }
                 if n < 0 && errno == EINTR { continue }
                 if n < 0 && (errno == EPIPE || errno == ECONNRESET) {
-                    throw SFTPError.processExited(process.terminationStatus)
+                    let code: Int32 = process.isRunning ? 0 : process.terminationStatus
+                    throw SFTPError.processExited(code)
                 }
                 throw SFTPError.protocolFailure("SFTP 写入失败（errno \(errno)）")
             }
@@ -513,18 +583,32 @@ final class SFTPClient: @unchecked Sendable {
     }
 
     private func readExact(_ count: Int) throws -> Data {
-        var data = Data()
-        while data.count < count {
-            if !process.isRunning && data.isEmpty {
-                throw SFTPError.processExited(process.terminationStatus)
+        guard stdoutFD >= 0 else { throw SFTPError.notConnected }
+        var buffer = [UInt8](repeating: 0, count: count)
+        var filled = 0
+        while filled < count {
+            if isClosed() {
+                throw SFTPError.processExited(process.isRunning ? 0 : process.terminationStatus)
             }
-            let chunk = stdout.fileHandleForReading.readData(ofLength: count - data.count)
-            if chunk.isEmpty {
-                throw SFTPError.protocolFailure("SFTP 连接已断开")
+            var err: Int32 = 0
+            let n = buffer.withUnsafeMutableBytes { raw -> Int in
+                guard let base = raw.baseAddress else { return -1 }
+                let countRead = Darwin.read(stdoutFD, base.advanced(by: filled), count - filled)
+                err = errno
+                return countRead
             }
-            data.append(chunk)
+            if n > 0 {
+                filled += n
+                continue
+            }
+            if n < 0 && err == EINTR { continue }
+            if n == 0 || (n < 0 && (err == EPIPE || err == ECONNRESET || err == EBADF || err == EIO)) {
+                let code: Int32 = process.isRunning ? 0 : process.terminationStatus
+                throw SFTPError.processExited(code)
+            }
+            throw SFTPError.protocolFailure("SFTP 读取失败（errno \(err)）")
         }
-        return data
+        return Data(buffer)
     }
 
     private func expectOK(_ packet: Packet) throws {

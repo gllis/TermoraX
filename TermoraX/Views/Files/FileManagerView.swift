@@ -49,10 +49,7 @@ struct FileManagerView: View {
                     isRemote: true
                 )
             }
-            if !transfers.jobs.isEmpty {
-                Divider()
-                transferList
-            }
+            TransferProgressList(transfers: transfers)
             if let error = model.errorMessage {
                 Divider()
                 Text(error)
@@ -356,62 +353,71 @@ struct FileManagerView: View {
 
     private static let dropTrim = CharacterSet(charactersIn: "\0").union(.whitespacesAndNewlines)
 
-    private var transferList: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("传输")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if transfers.jobs.contains(where: { $0.status != .running }) {
-                    Button("清空记录") {
-                        transfers.clearHistory()
+}
+
+/// 进度单独成视图。父视图若直接读 `jobs`，每次字节更新都会把两侧文件列表整棵重绘，切标签时主线程排不上事件。
+private struct TransferProgressList: View {
+    let transfers: TransferCenter
+
+    var body: some View {
+        if !transfers.jobs.isEmpty {
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("传输")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if transfers.jobs.contains(where: { $0.status != .running }) {
+                        Button("清空记录") {
+                            transfers.clearHistory()
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .help("清除已完成、失败和已取消的记录")
                     }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-                    .help("清除已完成、失败和已取消的记录")
                 }
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(transfers.jobs.prefix(8)) { job in
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Image(systemName: job.kind == .download ? "arrow.down.circle" : "arrow.up.circle")
-                                Text(job.name)
-                                    .lineLimit(1)
-                                Spacer()
-                                if job.status == .running {
-                                    if !job.speedText.isEmpty {
-                                        Text(job.speedText)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(transfers.jobs.prefix(8)) { job in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Image(systemName: job.kind == .download ? "arrow.down.circle" : "arrow.up.circle")
+                                    Text(job.name)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    if job.status == .running {
+                                        if !job.speedText.isEmpty {
+                                            Text(job.speedText)
+                                                .monospacedDigit()
+                                        }
+                                        Text(job.percentText)
                                             .monospacedDigit()
+                                            .frame(minWidth: 36, alignment: .trailing)
+                                        Button {
+                                            transfers.cancel(job.id)
+                                        } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("取消")
+                                    } else {
+                                        Text(job.message)
+                                            .foregroundStyle(job.status == .failed ? .red : .secondary)
                                     }
-                                    Text(job.percentText)
-                                        .monospacedDigit()
-                                        .frame(minWidth: 36, alignment: .trailing)
-                                    Button {
-                                        transfers.cancel(job.id)
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .help("取消")
-                                } else {
-                                    Text(job.message)
-                                        .foregroundStyle(job.status == .failed ? .red : .secondary)
+                                }
+                                if job.status == .running {
+                                    ProgressView(value: job.progress)
                                 }
                             }
-                            if job.status == .running {
-                                ProgressView(value: job.progress)
-                            }
+                            .font(.caption)
                         }
-                        .font(.caption)
                     }
                 }
+                .frame(maxHeight: 132)
             }
-            .frame(maxHeight: 132)
+            .padding(8)
         }
-        .padding(8)
     }
 }
 
@@ -427,10 +433,14 @@ struct FileEntry: Identifiable, Hashable {
 
     var sizeText: String {
         if isDirectory { return "—" }
+        return Self.sizeFormatter.string(fromByteCount: Int64(size))
+    }
+
+    private static let sizeFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
-        return formatter.string(fromByteCount: Int64(size))
-    }
+        return formatter
+    }()
 
     var dateText: String {
         guard let modified else { return "—" }
@@ -456,13 +466,13 @@ final class FileBrowserModel {
     var selectedRemote: FileEntry.ID?
     var isConnecting = false
     var errorMessage: String?
-    weak var transfers: TransferCenter?
+    @ObservationIgnored weak var transfers: TransferCenter?
     var isConnected: Bool { client != nil }
 
-    private var client: SFTPClient?
-    private var target: SSHTarget?
-    private var connectGeneration = 0
-    private var didResolveRemote = false
+    @ObservationIgnored private var client: SFTPClient?
+    @ObservationIgnored private var target: SSHTarget?
+    @ObservationIgnored private var connectGeneration = 0
+    @ObservationIgnored private var didResolveRemote = false
 
     func shutdown() {
         connectGeneration += 1
@@ -646,10 +656,11 @@ final class FileBrowserModel {
     }
 
     func uploadLocalURLs(_ urls: [URL], intoRemoteDirectory directory: String) {
-        guard client != nil else {
+        guard let client else {
             errorMessage = "SFTP 未连接"
             return
         }
+        let center = transfers
         let dest = directory.isEmpty ? remotePath : directory
         for url in urls {
             let local = url.standardizedFileURL
@@ -660,13 +671,15 @@ final class FileBrowserModel {
             transfer(name: name, kind: .upload) { job, report in
                 let access = local.startAccessingSecurityScopedResource()
                 defer { if access { local.stopAccessingSecurityScopedResource() } }
-                try self.client?.upload(
+                try client.upload(
                     local: local,
                     remote: remote,
                     progress: report,
-                    isCancelled: { self.transfers?.isCancelled(job) == true }
+                    isCancelled: { center?.isCancelled(job) == true }
                 )
-                DispatchQueue.main.async { self.refreshRemote() }
+                DispatchQueue.main.async {
+                    self.refreshRemote()
+                }
             }
         }
     }
@@ -678,15 +691,22 @@ final class FileBrowserModel {
 
     func downloadSelected() {
         guard let selected = remoteEntries.first(where: { $0.id == selectedRemote }) else { return }
+        guard let client else {
+            errorMessage = "SFTP 未连接"
+            return
+        }
+        let center = transfers
         let local = URL(fileURLWithPath: localPath).appendingPathComponent(selected.name)
         transfer(name: selected.name, kind: .download) { job, report in
-            try self.client?.download(
+            try client.download(
                 remote: selected.path,
                 local: local,
                 progress: report,
-                isCancelled: { self.transfers?.isCancelled(job) == true }
+                isCancelled: { center?.isCancelled(job) == true }
             )
-            DispatchQueue.main.async { self.loadLocal() }
+            DispatchQueue.main.async {
+                self.loadLocal()
+            }
         }
     }
 
@@ -741,15 +761,26 @@ final class FileBrowserModel {
         work: @escaping (UUID, @escaping (Int64, Int64) -> Void) throws -> Void
     ) {
         let id = UUID()
+        let center = transfers
+        let publisher = TransferPublisher(center)
+        // 结束状态直接交给主线程。进度合并会把最后一次「完成」和 100% 折在一起丢掉，
+        // 任务就停在 100%，看起来像没传完。
+        let deliver: (TransferJob) -> Void = { snapshot in
+            DispatchQueue.main.async {
+                center?.upsert(snapshot)
+            }
+        }
         var job = TransferJob(id: id, name: name, kind: kind, transferred: 0, total: 0, status: .running, message: "进行中")
-        transfers?.upsert(job)
+        center?.upsert(job)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var lastTick = Date()
             var lastBytes: Int64 = 0
             var speed: Double = 0
             do {
                 try work(id) { transferred, total in
-                    if self?.transfers?.isCancelled(id) == true { return }
+                    // 每个数据块都会进这里，而且调用方还握着 SFTP 协议锁。
+                    // 只能查取消标记和排队，不能碰界面，也不能同步等主线程。
+                    if center?.isCancelled(id) == true { return }
                     let now = Date()
                     let elapsed = now.timeIntervalSince(lastTick)
                     if elapsed >= 0.2 || transferred == total {
@@ -759,35 +790,31 @@ final class FileBrowserModel {
                         }
                         lastTick = now
                         lastBytes = transferred
-                        DispatchQueue.main.async {
-                            job.transferred = transferred
-                            job.total = total
-                            job.bytesPerSecond = speed
-                            let percent = total > 0 ? Int((Double(transferred) / Double(total) * 100).rounded()) : 0
-                            job.message = total > 0 ? "\(percent)%" : "进行中"
-                            self?.transfers?.upsert(job)
-                        }
+                        job.transferred = transferred
+                        job.total = total
+                        job.bytesPerSecond = speed
+                        let percent = total > 0 ? Int((Double(transferred) / Double(total) * 100).rounded()) : 0
+                        job.message = total > 0 ? "\(percent)%" : "进行中"
+                        publisher.publish(job)
                     }
                 }
-                DispatchQueue.main.async {
-                    guard self?.transfers?.isCancelled(id) != true else { return }
-                    job.status = .finished
-                    job.message = "完成"
-                    job.transferred = max(job.transferred, job.total)
-                    job.bytesPerSecond = 0
-                    self?.transfers?.upsert(job)
-                }
+                guard center?.isCancelled(id) != true else { return }
+                job.status = .finished
+                job.message = "完成"
+                job.transferred = max(job.transferred, job.total)
+                job.bytesPerSecond = 0
+                deliver(job)
             } catch {
+                if center?.isCancelled(id) == true {
+                    job.status = .cancelled
+                    job.message = "已取消"
+                } else {
+                    job.status = .failed
+                    job.message = error.localizedDescription
+                }
+                job.bytesPerSecond = 0
+                deliver(job)
                 DispatchQueue.main.async {
-                    if self?.transfers?.isCancelled(id) == true {
-                        job.status = .cancelled
-                        job.message = "已取消"
-                    } else {
-                        job.status = .failed
-                        job.message = error.localizedDescription
-                    }
-                    job.bytesPerSecond = 0
-                    self?.transfers?.upsert(job)
                     if kind == .upload {
                         self?.refreshRemote()
                     } else {
@@ -808,6 +835,37 @@ final class FileBrowserModel {
             modified: item.modified,
             systemImage: item.systemImage
         )
+    }
+}
+
+/// 进度可能每秒来好几次。主线程正在切标签时只保留最新一条，避免一串界面更新把点击堵在后面。
+private final class TransferPublisher: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var center: TransferCenter?
+    private var latest: TransferJob?
+    private var scheduled = false
+
+    init(_ center: TransferCenter?) {
+        self.center = center
+    }
+
+    func publish(_ job: TransferJob) {
+        lock.lock()
+        latest = job
+        let shouldSchedule = !scheduled
+        if shouldSchedule { scheduled = true }
+        lock.unlock()
+        guard shouldSchedule else { return }
+        DispatchQueue.main.async { [self] in
+            self.lock.lock()
+            let pending = self.latest
+            self.latest = nil
+            self.scheduled = false
+            self.lock.unlock()
+            if let pending {
+                self.center?.upsert(pending)
+            }
+        }
     }
 }
 

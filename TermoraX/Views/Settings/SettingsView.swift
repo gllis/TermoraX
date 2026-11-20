@@ -13,6 +13,12 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                LabeledContent("外观") {
+                    AppearancePicker(selection: $settings.appearance)
+                }
+            }
+
             Section("终端") {
                 HStack {
                     Text("字体大小")

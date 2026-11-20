@@ -55,6 +55,14 @@ final class TerminalRegistry {
     }
 }
 
+/// 终端始终用原来的深色，不跟随应用的浅色外观。
+enum TerminalChrome {
+    static let foreground = NSColor(calibratedWhite: 0.88, alpha: 1)
+    static let background = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1)
+    static let caret = NSColor(calibratedWhite: 0.92, alpha: 1)
+    static let caretText = background
+}
+
 /// 等宽字体 + 中文 cascade，避免 CJK 变成 tofu。
 enum TerminalFont {
     static func make(size: CGFloat = 13) -> NSFont {
@@ -149,15 +157,13 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
 
     private func configure() {
         terminalDelegate = self
-        process = LocalProcess(delegate: self)
+        process = LocalProcess(delegate: self, dispatchQueue: .main)
         font = TerminalFont.make(size: AppSettings.shared.terminalFontSize)
-        nativeForegroundColor = NSColor(calibratedWhite: 0.88, alpha: 1)
-        nativeBackgroundColor = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1)
         // Overlay scrollers outside NSScrollView stay at zero width and never appear.
+        appearance = NSAppearance(named: .darkAqua)
         scrollerStyle = .legacy
         showLegacyScroller()
-        caretColor = NSColor(calibratedWhite: 0.92, alpha: 1)
-        caretTextColor = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1)
+        applyChrome()
         zmodem.sendToHost = { [weak self] bytes in
             self?.writeToPty(bytes)
         }
@@ -173,6 +179,14 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
             guard let self, !bytes.isEmpty else { return }
             self.feed(byteArray: bytes[...])
         }
+    }
+
+    func applyChrome() {
+        nativeForegroundColor = TerminalChrome.foreground
+        nativeBackgroundColor = TerminalChrome.background
+        caretColor = TerminalChrome.caret
+        caretTextColor = TerminalChrome.caretText
+        superview?.layer?.backgroundColor = TerminalChrome.background.cgColor
     }
 
     func prepareLaunch(_ work: @escaping () -> Void) {
@@ -211,7 +225,7 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
             zmodem.cancel()
         }
         let outgoing: LocalProcess = process
-        process = LocalProcess(delegate: self)
+        process = LocalProcess(delegate: self, dispatchQueue: .main)
         outgoing.terminate()
         started = false
         getTerminal().resetToInitialState()
@@ -224,6 +238,18 @@ final class TermoraTerminalView: TerminalView, TerminalViewDelegate, LocalProces
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         tryStart()
+        // Tab switches detach this view and attach it to a new host. SwiftTerm
+        // clears keyboard focus on that move, and `tryStart` only claims it
+        // the first time the session launches.
+        guard window != nil, started else { return }
+        claimKeyboardFocus()
+    }
+
+    private func claimKeyboardFocus() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil else { return }
+            self.window?.makeFirstResponder(self)
+        }
     }
 
     /// 1.19 already recomputes cols/rows in `setFrameSize`; keep the SwiftUI
@@ -507,7 +533,8 @@ final class TerminalHostView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         clipsToBounds = true
-        layer?.backgroundColor = NSColor(calibratedRed: 0.09, green: 0.10, blue: 0.12, alpha: 1).cgColor
+        appearance = NSAppearance(named: .darkAqua)
+        layer?.backgroundColor = TerminalChrome.background.cgColor
         terminal.removeFromSuperview()
         terminal.translatesAutoresizingMaskIntoConstraints = true
         terminal.autoresizingMask = []
@@ -521,8 +548,13 @@ final class TerminalHostView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         pinTitlebarSeparator()
+        guard window != nil else { return }
+        // Run after SwiftTerm clears focus and after SwiftUI finishes the tab update.
         DispatchQueue.main.async { [weak self] in
-            self?.pinTitlebarSeparator()
+            guard let self else { return }
+            self.pinTitlebarSeparator()
+            guard let window = self.window else { return }
+            window.makeFirstResponder(self.terminal)
         }
     }
 
